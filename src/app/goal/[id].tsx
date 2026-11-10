@@ -13,12 +13,12 @@ import type { Rule, RuleKind } from '@/store/types';
 import { uid, useStore } from '@/store/useStore';
 import { useTheme } from '@/theme';
 
-const RULE_TEMPLATES: { kind: RuleKind; example: string; needs?: 'amount' | 'percent'; default?: number }[] = [
+const RULE_TEMPLATES: { kind: RuleKind; example: string; needs?: 'amount' | 'percent' }[] = [
   { kind: 'meal_surplus', example: 'Grocery underspend each week → this goal' },
-  { kind: 'fixed', example: 'A fixed amount every payday', needs: 'amount', default: 500 },
-  { kind: 'percent', example: 'A share of any Found Money', needs: 'percent', default: 50 },
-  { kind: 'roundup', example: 'Round food spend up to the nearest 10', needs: 'amount', default: 10 },
-  { kind: 'threshold', example: 'If the month ends with spare money, ask me', needs: 'amount', default: 1000 },
+  { kind: 'fixed', example: 'A fixed amount every payday', needs: 'amount' },
+  { kind: 'percent', example: 'A share of any Found Money', needs: 'percent' },
+  { kind: 'roundup', example: 'Round food spend up to the nearest 10', needs: 'amount' },
+  { kind: 'threshold', example: 'If the month ends with spare money, ask me', needs: 'amount' },
 ];
 
 export default function GoalDetail() {
@@ -53,10 +53,9 @@ export default function GoalDetail() {
   const withFound = monthsToGoal(goal, (weeklyFound * 52) / 12);
 
   const openRule = (kind: RuleKind) => {
-    const tpl = RULE_TEMPLATES.find((r) => r.kind === kind)!;
     const existing = goal.rules.find((r) => r.kind === kind);
-    setRuleDraft(existing ?? { id: uid(), kind, enabled: true, amount: tpl.needs === 'amount' ? tpl.default : undefined, percent: tpl.needs === 'percent' ? tpl.default : undefined });
-    setDraft(String(existing?.amount ?? existing?.percent ?? tpl.default ?? ''));
+    setRuleDraft(existing ?? { id: uid(), kind, enabled: true });
+    setDraft(String(existing?.amount ?? existing?.percent ?? ''));
   };
 
   return (
@@ -202,11 +201,13 @@ export default function GoalDetail() {
         footer={
           <Button
             label="Turn on rule"
+            disabled={!!ruleDraft && RULE_TEMPLATES.find((x) => x.kind === ruleDraft.kind)?.needs !== undefined && !(parseFloat(draft) > 0)}
             onPress={() => {
               if (!ruleDraft) return;
               const n = parseFloat(draft);
               const tpl = RULE_TEMPLATES.find((x) => x.kind === ruleDraft.kind)!;
-              upsertRule(goal.id, { ...ruleDraft, enabled: true, amount: tpl.needs === 'amount' ? n || tpl.default : undefined, percent: tpl.needs === 'percent' ? Math.min(100, n || tpl.default!) : undefined });
+              if (tpl.needs && !(n > 0)) return;
+              upsertRule(goal.id, { ...ruleDraft, enabled: true, amount: tpl.needs === 'amount' ? n : undefined, percent: tpl.needs === 'percent' ? Math.min(100, n) : undefined });
               tick();
               setRuleDraft(null);
             }}

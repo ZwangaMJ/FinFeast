@@ -19,5 +19,6 @@ export function useInsights() {
       assignedWeeks: st.assignedWeeks,
     })),
   );
-  return useMemo(() => generateInsights(s), [s]);
+  const hasFinancialData = !!s.income || s.bills.length > 0 || s.transactions.length > 0 || s.weeklyFoodBudget > 0;
+  return useMemo(() => hasFinancialData ? generateInsights(s) : [], [s, hasFinancialData]);
 }

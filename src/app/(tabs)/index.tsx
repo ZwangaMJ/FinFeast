@@ -5,10 +5,9 @@ import { HeroCard, InsightCard, MealCard } from '@/components/cards';
 import { Ring } from '@/components/charts';
 import { Button, Card, Icon, Row, Screen, Section, Txt, useCurrency } from '@/components/ui';
 import { useInsights } from '@/hooks/useInsights';
-import { FOOD, planWeekFoodSpend, riskyDays, safetyNetDays, spend, VARIABLE_CATEGORIES, weeklyFlexible } from '@/lib/budget';
+import { FOOD, riskyDays, safetyNetDays, spend, VARIABLE_CATEGORIES, weeklyFlexible } from '@/lib/budget';
 import { addDays, daysBetween, DAY_LONG, greeting, today, weekStart, weekday } from '@/lib/dates';
 import { money, PRICE_FACTOR } from '@/lib/format';
-import { planCost } from '@/lib/mealPlanner';
 import { MEAL_SLOTS } from '@/store/types';
 import { useStore } from '@/store/useStore';
 import { useTheme } from '@/theme';
@@ -29,8 +28,8 @@ export default function Home() {
   const flexLeft = flexWeek - spentWeek;
   const resetsIn = 7 - daysBetween(ws, t);
 
-  const est = s.plan ? planCost(s.plan.days, s.profile.householdSize, s.pantry.map((p) => p.key), currency) : s.weeklyFoodBudget;
-  const foodSpent = s.plan ? planWeekFoodSpend(s.transactions, s.plan) : spend(s.transactions, ws, addDays(t, 1), FOOD);
+  const est = s.weeklyFoodBudget;
+  const foodSpent = spend(s.transactions, ws, addDays(t, 1), FOOD);
   const foodRatio = est > 0 ? foodSpent / est : 0;
   const dayIdx = s.plan ? daysBetween(s.plan.weekStart, t) : -1;
   const todayPlan = s.plan?.days[dayIdx];
@@ -38,6 +37,9 @@ export default function Home() {
   const safety = safetyNetDays(s.goals, s.bills, s.weeklyFoodBudget);
   const risky = riskyDays(s.transactions, 50 * PRICE_FACTOR[currency])[weekday(t)];
   const showStatementPrompt = !s.manualMode && s.documents.filter((d) => d.type === 'bank_statement' && d.status === 'confirmed' && d.addedAt.slice(0, 10) >= addDays(t, -30)).length === 0;
+  const hasFinancialData = !!s.income || s.bills.length > 0 || s.transactions.length > 0 || s.weeklyFoodBudget > 0;
+  const hasFoodData = s.weeklyFoodBudget > 0 || s.transactions.some((transaction) => FOOD.includes(transaction.category));
+  const hasGoalBalance = s.goals.some((goal) => goal.type === 'emergency' && goal.current > 0);
   const name = s.profile.name;
 
   return (
@@ -63,7 +65,7 @@ export default function Home() {
       <Pressable onPress={() => router.navigate('/goals')} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: tone('blue').bg, borderRadius: 999, paddingHorizontal: 14, minHeight: 40, marginBottom: 14 }}>
         <Icon name="shield-checkmark-outline" size={17} color={tone('blue').fg} />
         <Txt v="smallStrong" color={tone('blue').fg} style={{ flex: 1 }}>
-          {safety > 0 ? `Safety net: ${safety} day${safety === 1 ? '' : 's'} of essentials covered` : 'Safety net: let’s cover your first day of essentials'}
+          {hasGoalBalance ? `Safety net: ${safety} day${safety === 1 ? '' : 's'} of essentials covered` : 'Add your savings balance to calculate your safety net'}
         </Txt>
         <Icon name="chevron-forward" size={16} color={tone('blue').fg} />
       </Pressable>
@@ -83,14 +85,22 @@ export default function Home() {
         </Card>
       ) : null}
 
-      <HeroCard
-        label="Flexible this week"
-        value={fmt(Math.max(0, Math.round(flexLeft)))}
-        context={flexLeft >= 0 ? `left of ${fmt(Math.round(flexWeek))} · resets in ${resetsIn} day${resetsIn === 1 ? '' : 's'}` : `${fmt(Math.abs(flexLeft))} past this week’s flexible money — next week’s plan can make it back`}
-        cta={{ label: 'See where it goes', onPress: () => router.navigate('/money') }}
-      />
+      {s.income ? (
+        <HeroCard
+          label="Flexible this week"
+          value={fmt(Math.max(0, Math.round(flexLeft)))}
+          context={flexLeft >= 0 ? `left of ${fmt(Math.round(flexWeek))} · resets in ${resetsIn} day${resetsIn === 1 ? '' : 's'}` : `${fmt(Math.abs(flexLeft))} past this week’s flexible money — next week’s plan can make it back`}
+          cta={{ label: 'See where it goes', onPress: () => router.navigate('/money') }}
+        />
+      ) : (
+        <Card style={{ marginBottom: 14, gap: 8 }}>
+          <Txt v="h3">Add your financial data</Txt>
+          <Txt v="small" muted>Upload a text-based payslip or bank statement PDF to see your actual income, bills, and spending here.</Txt>
+          <Button label="Upload a document" small onPress={() => router.push('/upload')} />
+        </Card>
+      )}
 
-      {risky?.risky && s.settings.riskAlerts ? (
+      {hasFinancialData && risky?.risky && s.settings.riskAlerts ? (
         <Card tone="amber" style={{ marginTop: 14, gap: 6 }}>
           <Txt v="h3">{DAY_LONG[weekday(t)]} takeaway alert</Txt>
           <Txt v="small" muted>
@@ -102,23 +112,35 @@ export default function Home() {
       {/* Week food ring + today's meals */}
       <Section title="This week’s food" action={{ label: 'Plan', onPress: () => router.navigate('/meals') }}>
         <Card style={{ gap: 14 }}>
-          <Row gap={18}>
-            <Ring value={foodRatio} size={112} stroke={11} tone="green" overTone="amber" accessibilityLabel={`Weekly food budget: ${Math.round(foodRatio * 100)}% used, ${fmt(Math.max(0, est - foodSpent))} left`}>
-              <Txt v="h2" tabular>
-                {Math.round(foodRatio * 100)}%
-              </Txt>
-              <Txt v="caption" muted>
-                used
-              </Txt>
-            </Ring>
-            <View style={{ flex: 1, gap: 4 }}>
-              <Txt v="display" color={foodRatio > 1 ? c.amber : c.text}>
-                {fmt(Math.abs(Math.round(est - foodSpent)))}
-              </Txt>
-              <Txt muted>{foodRatio > 1 ? 'over the plan so far' : `left of ${fmt(Math.round(est))} planned`}</Txt>
-              <Button label="Add receipt" icon="camera-outline" small variant="secondary" style={{ alignSelf: 'flex-start', marginTop: 6 }} onPress={() => router.push({ pathname: '/upload', params: { mode: 'receipt' } })} />
+          {s.weeklyFoodBudget > 0 ? (
+            <Row gap={18}>
+              <Ring value={foodRatio} size={112} stroke={11} tone="green" overTone="amber" accessibilityLabel={`Weekly food budget: ${Math.round(foodRatio * 100)}% used, ${fmt(Math.max(0, est - foodSpent))} left`}>
+                <Txt v="h2" tabular>
+                  {Math.round(foodRatio * 100)}%
+                </Txt>
+                <Txt v="caption" muted>
+                  used
+                </Txt>
+              </Ring>
+              <View style={{ flex: 1, gap: 4 }}>
+                <Txt v="display" color={foodRatio > 1 ? c.amber : c.text}>
+                  {fmt(Math.abs(Math.round(est - foodSpent)))}
+                </Txt>
+                <Txt muted>{foodRatio > 1 ? 'over the plan so far' : `left of ${fmt(Math.round(est))} planned`}</Txt>
+              </View>
+            </Row>
+          ) : hasFoodData ? (
+            <View style={{ gap: 8 }}>
+              <Txt v="display">{fmt(Math.round(foodSpent))}</Txt>
+              <Txt muted>Actual food spending this week. Set a food budget to compare it.</Txt>
+              <Button label="Set a food budget" small onPress={() => router.navigate('/profile')} />
             </View>
-          </Row>
+          ) : (
+            <View style={{ gap: 8 }}>
+              <Txt muted>Upload a bank statement or enter a food budget to track real food spending here.</Txt>
+              <Button label="Add a document" small onPress={() => router.push('/upload')} />
+            </View>
+          )}
         </Card>
         {todayPlan ? (
           <View style={{ gap: 10, marginTop: 12 }}>
@@ -135,7 +157,7 @@ export default function Home() {
           <InsightCard insight={insights[0]} compact />
         ) : (
           <Card>
-            <Txt muted>Nothing to change today — you’re on plan. We’ll tell you the moment we find money.</Txt>
+            <Txt muted>{hasFinancialData ? 'No insights from your data yet.' : 'Insights will appear when your actual financial data is available.'}</Txt>
           </Card>
         )}
       </Section>

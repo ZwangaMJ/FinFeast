@@ -4,18 +4,16 @@
  * the upload modal and the quick-add receipt flow.
  */
 import * as DocumentPicker from 'expo-document-picker';
-import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useState } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { ReviewFieldCard } from '@/components/cards';
-import { Ring } from '@/components/charts';
-import { AmountInput, Button, Card, Chip, Divider, Icon, ListRow, Pill, Row, Sheet, Txt, TrustStrip, useCurrency } from '@/components/ui';
+import { AmountInput, Button, Card, Chip, Icon, Pill, Row, Sheet, Txt, TrustStrip, useCurrency } from '@/components/ui';
 import { CATEGORY_LABEL, weeklyFlexible } from '@/lib/budget';
 import { shortDate } from '@/lib/dates';
 import { money } from '@/lib/format';
 import { success } from '@/lib/haptics';
-import { fileHash, pageCount, parseDocument, ParseError, SAMPLES, suggestType, SUPPORTED_TYPES, type ExtractionResult, type UploadInput } from '@/lib/parser';
+import { fileHash, parseDocument, ParseError, suggestType, SUPPORTED_TYPES, type ExtractionResult, type UploadInput } from '@/lib/parser';
 import type { Category, DocRecord, DocType } from '@/store/types';
 import { uid, useStore, type ReviewEdits } from '@/store/useStore';
 import { useTheme } from '@/theme';
@@ -37,8 +35,6 @@ const TYPE_OPTIONS: { type: DocType; label: string; icon: string }[] = [
   { type: 'unknown', label: 'Not sure', icon: 'help-circle-outline' },
 ];
 
-const STATUS = ['Opening your document…', 'Reading the numbers…', 'Checking the totals…', 'Building your first budget…'];
-
 export function DocumentFlow({ mode = 'upload', onDone, onManual }: { mode?: 'upload' | 'onboarding' | 'receipt'; onDone: () => void; onManual?: () => void }) {
   const [step, setStep] = useState<Step>({ kind: 'pick' });
   const documents = useStore((s) => s.documents);
@@ -56,7 +52,7 @@ export function DocumentFlow({ mode = 'upload', onDone, onManual }: { mode?: 'up
     else setStep({ kind: 'type', input, suggested });
   };
 
-  if (step.kind === 'pick') return <PickStep mode={mode} onPicked={start} onManual={onManual} />;
+  if (step.kind === 'pick') return <PickStep mode={mode} onPicked={start} onManual={onManual} onDone={onDone} />;
   if (step.kind === 'type') return <TypeStep step={step} onBack={() => setStep({ kind: 'pick' })} onConfirm={(type) => setStep({ kind: 'processing', input: step.input, type })} />;
   if (step.kind === 'processing')
     return (
@@ -112,22 +108,10 @@ export function DocumentFlow({ mode = 'upload', onDone, onManual }: { mode?: 'up
   return <DoneStep result={step.result} onDone={onDone} currency={currency} />;
 }
 
-function PickStep({ mode, onPicked, onManual }: { mode: string; onPicked: (i: UploadInput) => void; onManual?: () => void }) {
+function PickStep({ mode, onPicked, onManual, onDone }: { mode: string; onPicked: (i: UploadInput) => void; onManual?: () => void; onDone: () => void }) {
   const { c } = useTheme();
-  const [camHelp, setCamHelp] = useState(false);
-
-  const camera = async () => {
-    setCamHelp(false);
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    if (!perm.granted) return;
-    const res = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
-    if (!res.canceled && res.assets[0]) {
-      const a = res.assets[0];
-      onPicked({ name: a.fileName ?? `scan_${Date.now()}.jpg`, size: a.fileSize ?? a.width * a.height, mimeType: a.mimeType ?? 'image/jpeg', uri: a.uri });
-    }
-  };
   const files = async () => {
-    const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: true, base64: false });
+    const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf'], copyToCacheDirectory: true, base64: false });
     if (!res.canceled && res.assets[0]) {
       const a = res.assets[0];
       onPicked({ name: a.name, size: a.size ?? 0, mimeType: a.mimeType ?? undefined, uri: a.uri });
@@ -137,52 +121,17 @@ function PickStep({ mode, onPicked, onManual }: { mode: string; onPicked: (i: Up
   return (
     <View style={{ gap: 14 }}>
       <Txt v="title">{mode === 'receipt' ? 'Add a receipt' : 'Add a document'}</Txt>
-      <Txt muted>{mode === 'receipt' ? 'Snap it and we’ll file it under food spending.' : 'A payslip or bank statement is enough for your budget to build itself.'}</Txt>
+      <Txt muted>{mode === 'receipt' ? 'Receipt extraction is not available yet. No receipt data will be added.' : 'Upload a text-based payslip or bank statement PDF to extract your financial data.'}</Txt>
       <TrustStrip />
-      <Row gap={12}>
-        <Card style={{ flex: 1, alignItems: 'center', gap: 8 }} onPress={() => setCamHelp(true)} accessibilityLabel="Scan with camera">
-          <Icon name="camera-outline" size={28} color={c.primary} />
-          <Txt v="bodyStrong">Scan</Txt>
-          <Txt v="caption" muted center>
-            Receipts, payslips
-          </Txt>
-        </Card>
-        <Card style={{ flex: 1, alignItems: 'center', gap: 8 }} onPress={files} accessibilityLabel="Choose a file">
+      {mode !== 'receipt' ? (
+        <Card style={{ alignItems: 'center', gap: 8 }} onPress={files} accessibilityLabel="Choose a PDF file">
           <Icon name="folder-open-outline" size={28} color={c.primary} />
-          <Txt v="bodyStrong">Choose file</Txt>
-          <Txt v="caption" muted center>
-            PDF or photo
-          </Txt>
+          <Txt v="bodyStrong">Choose a PDF</Txt>
+          <Txt v="caption" muted center>Scanned or image-only PDFs are not supported yet.</Txt>
         </Card>
-      </Row>
-      <Divider />
-      <Txt v="label" muted>
-        Or try it with a sample
-      </Txt>
-      <Card padded={false} style={{ paddingHorizontal: 14, paddingVertical: 4 }}>
-        {SAMPLES.filter((s) => mode !== 'receipt' || s.kind === 'receipt' || s.kind === 'blurry').map((s, i, arr) => (
-          <View key={s.kind}>
-            <ListRow icon={s.icon} iconTone={s.kind === 'blurry' ? 'gray' : 'amber'} title={s.label} subtitle={s.name} chevron onPress={() => onPicked({ name: s.name, size: 410000, sample: s.kind, mimeType: s.name.endsWith('.pdf') ? 'application/pdf' : 'image/jpeg' })} />
-            {i < arr.length - 1 ? <Divider style={{ marginVertical: 0 }} /> : null}
-          </View>
-        ))}
-      </Card>
+      ) : null}
+      {mode === 'receipt' ? <Button label="Close" variant="ghost" onPress={onDone} /> : null}
       {onManual ? <Button label={mode === 'onboarding' ? 'Skip for now — enter two numbers instead' : 'Enter totals manually instead'} variant="ghost" onPress={onManual} /> : null}
-      <Sheet
-        visible={camHelp}
-        onClose={() => setCamHelp(false)}
-        title="Camera access"
-        footer={
-          <>
-            <Button label="Allow camera" icon="camera-outline" onPress={camera} />
-            <Button label="Not now" variant="ghost" tone="gray" onPress={() => setCamHelp(false)} />
-          </>
-        }>
-        <Txt muted>Camera photos stay on this device. Text-based payslip PDFs can be read locally; photo OCR is not available yet.</Txt>
-        <Txt v="small" muted>
-          Tip: flat surface, good light, all four corners in frame.
-        </Txt>
-      </Sheet>
     </View>
   );
 }
@@ -228,20 +177,14 @@ function ProcessingStep({
   onError: (reason: 'illegible' | 'unsupported', detail?: string) => void;
 }) {
   const currency = useCurrency();
-  const pages = pageCount(type, input);
-  const [elapsed, setElapsed] = useState(0);
-  const total = type === 'receipt' ? 2800 : type === 'bank_statement' ? 5200 : 4000;
-
   useEffect(() => {
-    const started = Date.now();
-    const id = setInterval(() => setElapsed(Date.now() - started), 120);
     const docId = uid();
     let cancelled = false;
     const run = async () => {
       try {
-        const [result] = await Promise.all([parseDocument(input, type, currency, docId), new Promise((r) => setTimeout(r, total))]);
+        const result = await parseDocument(input, type, docId);
         if (cancelled) return;
-        const r = result as ExtractionResult;
+        const r = result;
         const summary =
           r.documentType === 'payslip'
             ? `Net pay ${money(r.income?.net?.value ?? 0, r.payslip?.currency ?? currency)}`
@@ -253,39 +196,23 @@ function ProcessingStep({
         onResult({ id: docId, name: input.name, type, hash: fileHash(input), addedAt: new Date().toISOString(), status: 'needs_review', pages: r.pages, summary }, r);
       } catch (e) {
         if (cancelled) return;
-        await new Promise((res) => setTimeout(res, 1600));
         onError(e instanceof ParseError ? e.reason : 'illegible', e instanceof Error ? e.message : undefined);
       }
     };
     run();
     return () => {
       cancelled = true;
-      clearInterval(id);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const p = Math.min(1, elapsed / total);
-  const status = STATUS[Math.min(STATUS.length - 1, Math.floor(p * STATUS.length))];
-  const page = Math.min(pages, Math.floor(p * pages) + 1);
   return (
     <View style={{ alignItems: 'center', gap: 18, paddingTop: 30 }}>
-      <Ring value={p} size={160} stroke={10} accessibilityLabel={`Processing, ${Math.round(p * 100)} percent`}>
-        <Txt v="display" tabular>
-          {Math.round(p * 100)}%
-        </Txt>
-      </Ring>
-      <Txt v="h2" center accessibilityLabel={status}>
-        {status}
-      </Txt>
-      {pages > 1 ? (
-        <Txt muted tabular>
-          Page {page} of {pages}
-        </Txt>
-      ) : null}
-      <TrustStrip text="Payslip PDFs are read on this device. Nothing is used until you confirm." />
+      <Icon name="document-text-outline" size={40} />
+      <Txt v="h2" center>Reading your document…</Txt>
+      <TrustStrip text="Your document is read on this device. Nothing is used until you confirm." />
       <Txt v="small" muted center>
-        You can leave this screen — we’ll let you know when it’s ready.
+        The review will show values extracted from this document.
       </Txt>
     </View>
   );
@@ -356,7 +283,7 @@ function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: Extrac
   const [rejected, setRejected] = useState<string[]>([]);
   const groceryMonthly = result.variableCategories.food_grocery?.monthly ?? 0;
   const diningMonthly = result.variableCategories.food_dining?.monthly ?? 0;
-  const [weeklyFood, setWeeklyFood] = useState(Math.round((groceryMonthly * 12) / 52 / 10) * 10 || 700);
+  const [weeklyFood, setWeeklyFood] = useState(Math.round((groceryMonthly * 12 / 52 + Number.EPSILON) * 100) / 100);
   const [savings, setSavings] = useState(result.savingsTransfers.reduce((a, t) => a + t.monthly, 0));
   const [answers, setAnswers] = useState<Record<string, Category>>({});
   const [receiptCat, setReceiptCat] = useState<Category>(result.receipt?.categoryGuess ?? 'food_grocery');

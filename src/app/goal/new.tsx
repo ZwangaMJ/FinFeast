@@ -25,9 +25,10 @@ export default function NewGoal() {
   const food = useStore((s) => s.weeklyFoodBudget);
   const addGoal = useStore((s) => s.addGoal);
   const hasEmergency = goals.some((g) => g.type === 'emergency');
+  const suggestedEmergencyTarget = emergencyTarget(bills, food);
   const [type, setType] = useState<GoalType>(hasEmergency ? 'short_term' : 'emergency');
   const [name, setName] = useState('');
-  const [target, setTarget] = useState(hasEmergency ? '' : String(emergencyTarget(bills, food)));
+  const [target, setTarget] = useState(!hasEmergency && suggestedEmergencyTarget > 0 ? String(suggestedEmergencyTarget) : '');
   const [monthly, setMonthly] = useState('');
   const [months, setMonths] = useState(12);
   const deadline = (() => {

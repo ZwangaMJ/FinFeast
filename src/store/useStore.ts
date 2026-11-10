@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { RECIPES } from '@/data/recipes';
 import { emergencyTarget, flexibleMonthly, planCoverage, planWeekFoodSpend, spend } from '@/lib/budget';
 import { addDays, daysBetween, monthName, monthStart, today, weekStart } from '@/lib/dates';
-import { money, PRICE_FACTOR } from '@/lib/format';
+import { money } from '@/lib/format';
 import type { Insight } from '@/lib/insights';
 import { allSwapKeys, generatePlan, planCost, regenerateDay, regenerateSlot, relinkBatches, type PlannerInput } from '@/lib/mealPlanner';
 import type { ExtractionResult } from '@/lib/parser';
@@ -126,7 +126,7 @@ export const initialData: AppData = {
   settings: { themeMode: 'system', notifications: false, riskAlerts: true, weeklyDigest: true },
   manualMode: false,
   income: null,
-  weeklyFoodBudget: 700,
+  weeklyFoodBudget: 0,
   bills: [],
   transactions: [],
   documents: [],
@@ -208,15 +208,16 @@ export const useStore = create<AppData & Actions>()((set, get) => {
       const ensureEmergency = (s: AppData): Goal[] => {
         const target = emergencyTarget(s.bills, s.weeklyFoodBudget);
         const existing = s.goals.find((g) => g.type === 'emergency');
+        if (target <= 0) return s.goals;
         if (existing) {
-          return s.goals.map((g) => (g.id === existing.id && g.contributions.length === 0 && g.current === 0 ? { ...g, target: Math.max(target, 1000) } : g));
+          return s.goals.map((g) => (g.id === existing.id && g.contributions.length === 0 && g.current === 0 ? { ...g, target } : g));
         }
         return [
           {
             id: uid(),
             type: 'emergency',
             name: 'Emergency Fund',
-            target: Math.max(target, 1000 * PRICE_FACTOR[s.profile.currency]),
+            target,
             current: 0,
             deadline: null,
             monthlyCommitted: 0,

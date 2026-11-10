@@ -8,7 +8,7 @@ import { AmountInput, Button, Card, Chip, Field, Icon, Row, Screen, Stepper, Txt
 import { RECIPE_BY_ID } from '@/data/recipes';
 import { weeklyFlexible } from '@/lib/budget';
 import { DAY_SHORT, weekday } from '@/lib/dates';
-import { CURRENCY_LABELS, money, PRICE_FACTOR } from '@/lib/format';
+import { CURRENCY_LABELS, money } from '@/lib/format';
 import { success } from '@/lib/haptics';
 import { estimateRange, planCost } from '@/lib/mealPlanner';
 import type { Allergen, Currency, DietPattern, GoalPriority } from '@/store/types';
@@ -189,11 +189,9 @@ function ProfileSnapshot({ onDone }: { onDone: () => void }) {
 }
 
 function ManualMode({ onDone }: { onDone: () => void }) {
-  const currency = useStore((s) => s.profile.currency);
   const setManual = useStore((s) => s.setManualBaseline);
-  const f = PRICE_FACTOR[currency];
   const [income, setIncome] = useState('');
-  const [food, setFood] = useState(String(Math.round(700 * f)));
+  const [food, setFood] = useState('');
   const ok = parseFloat(income) > 0 && parseFloat(food) > 0;
   return (
     <View style={{ gap: 16 }}>

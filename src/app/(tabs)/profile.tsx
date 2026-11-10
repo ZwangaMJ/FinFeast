@@ -123,10 +123,10 @@ export default function Profile() {
             icon="basket-outline"
             iconTone="amber"
             title="Weekly grocery budget"
-            subtitle={`${money(s.weeklyFoodBudget, currency)} · your meal-plan ceiling`}
+            subtitle={s.weeklyFoodBudget > 0 ? `${money(s.weeklyFoodBudget, currency)} · your meal-plan ceiling` : 'Not set'}
             chevron
             onPress={() => {
-              setDraft(String(s.weeklyFoodBudget));
+              setDraft(s.weeklyFoodBudget > 0 ? String(s.weeklyFoodBudget) : '');
               setEdit('food');
             }}
           />
@@ -176,7 +176,7 @@ export default function Profile() {
         <Card tone="green" style={{ gap: 10 }}>
           {[
             ['phone-portrait-outline', 'Your data is stored on this device for now; account sign-in and cloud sync are coming soon.'],
-            ['eye-off-outline', 'Document parsing is simulated in this prototype; original document files are not uploaded.'],
+            ['eye-off-outline', 'Supported payslip and bank statement PDFs are read on this device. Receipt and tax-form extraction are not available yet.'],
             ['time-outline', 'Your financial records stay on this device.'],
             ['ban-outline', 'Never sold. No third-party ad tracking.'],
           ].map(([icon, text]) => (

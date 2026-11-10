@@ -30,6 +30,7 @@ export default function Goals() {
   const [amount, setAmount] = useState('');
   const [goalId, setGoalId] = useState<string | null>(null);
   const meter = securityMeter(goals, bills, food);
+  const hasFinancialData = useStore((s) => Boolean(s.income || s.bills.length || s.transactions.length || s.weeklyFoodBudget > 0));
   const pending = found.filter((f) => f.status === 'pending');
   const history = found.filter((f) => f.status !== 'pending').slice(0, 8);
   const totalFound = found.filter((f) => f.status === 'allocated').reduce((a, f) => a + f.amount, 0);
@@ -40,18 +41,26 @@ export default function Goals() {
         <Txt v="label" color={tone('blue').fg}>
           Security Meter
         </Txt>
-        <Ring value={meter.score / 100} size={170} stroke={12} tone="blue" overTone="blue" accessibilityLabel={`Security meter ${meter.score} out of 100`}>
-          <Txt v="hero" tabular>
-            {meter.score}
+        {hasFinancialData ? (
+          <>
+            <Ring value={meter.score / 100} size={170} stroke={12} tone="blue" overTone="blue" accessibilityLabel={`Security meter ${meter.score} out of 100`}>
+              <Txt v="hero" tabular>
+                {meter.score}
+              </Txt>
+              <Txt v="caption" muted>
+                of 100
+              </Txt>
+            </Ring>
+            <Txt muted center style={{ maxWidth: 320 }}>
+              {meter.months >= 0.1 ? `${meter.months.toFixed(1)} months of essentials covered. ` : ''}
+              {meterCopy(meter.score)}
+            </Txt>
+          </>
+        ) : (
+          <Txt muted center style={{ maxWidth: 320 }}>
+            Add your payslip, bank statement, or budget to calculate your safety meter.
           </Txt>
-          <Txt v="caption" muted>
-            of 100
-          </Txt>
-        </Ring>
-        <Txt muted center style={{ maxWidth: 320 }}>
-          {meter.months >= 0.1 ? `${meter.months.toFixed(1)} months of essentials covered. ` : ''}
-          {meterCopy(meter.score)}
-        </Txt>
+        )}
         {totalFound > 0 ? (
           <Txt v="smallStrong" color={tone('green').fg}>
             {money(totalFound, currency)} of found money put to work so far
@@ -68,7 +77,7 @@ export default function Goals() {
           </View>
         ) : (
           <Card>
-            <EmptyState icon="sparkles-outline" title="Nothing waiting" body="When groceries come in under plan, or you cancel a subscription, the money lands here for you to send somewhere useful." />
+            <EmptyState icon="sparkles-outline" title="Nothing waiting" body="Potential savings will be identified from your transactions and bills once you add financial data." />
           </Card>
         )}
       </Section>
