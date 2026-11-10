@@ -1,6 +1,4 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
 
 import { RECIPES } from '@/data/recipes';
 import { emergencyTarget, flexibleMonthly, planCoverage, planWeekFoodSpend, spend } from '@/lib/budget';
@@ -29,7 +27,7 @@ import {
 
 export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
-type Data = {
+export type AppData = {
   onboarded: boolean;
   profile: Profile;
   settings: Settings;
@@ -122,7 +120,7 @@ const defaultProfile: Profile = {
   goalPriority: 'safety',
 };
 
-const initialData: Data = {
+export const initialData: AppData = {
   onboarded: false,
   profile: defaultProfile,
   settings: { themeMode: 'system', notifications: false, riskAlerts: true, weeklyDigest: true },
@@ -148,7 +146,7 @@ const initialData: Data = {
   taxInfo: null,
 };
 
-function plannerInput(s: Data, mode: MealPlan['mode'] = 'normal'): Omit<PlannerInput, 'weekStart' | 'seed'> {
+function plannerInput(s: AppData, mode: MealPlan['mode'] = 'normal'): Omit<PlannerInput, 'weekStart' | 'seed'> {
   return {
     profile: s.profile,
     ceiling: s.weeklyFoodBudget,
@@ -160,9 +158,7 @@ function plannerInput(s: Data, mode: MealPlan['mode'] = 'normal'): Omit<PlannerI
 
 const FOOD_CATS: Category[] = ['food_grocery', 'food_dining'];
 
-export const useStore = create<Data & Actions>()(
-  persist(
-    (set, get) => {
+export const useStore = create<AppData & Actions>()((set, get) => {
       /** Route found money through the user's opt-in rules; unruled money waits in the inbox. */
       const routeFoundMoney = (fm: FoundMoney, goals: Goal[]): { fm: FoundMoney[]; goals: Goal[] } => {
         const date = today();
@@ -209,7 +205,7 @@ export const useStore = create<Data & Actions>()(
         return gs;
       };
 
-      const ensureEmergency = (s: Data): Goal[] => {
+      const ensureEmergency = (s: AppData): Goal[] => {
         const target = emergencyTarget(s.bills, s.weeklyFoodBudget);
         const existing = s.goals.find((g) => g.type === 'emergency');
         if (existing) {
@@ -264,11 +260,18 @@ export const useStore = create<Data & Actions>()(
 
         applyExtraction: (doc, r, edits) => {
           const s = get();
-          let next: Partial<Data> = { documents: [{ ...doc, status: 'confirmed' }, ...s.documents.filter((d) => d.id !== doc.id)] };
+          let next: Partial<AppData> = { documents: [{ ...doc, status: 'confirmed' }, ...s.documents.filter((d) => d.id !== doc.id)] };
           if (r.income?.net) {
-            const net = edits.net ?? r.income.net.value;
+            const net = edits.net ?? r.payslipSummary?.disposableNetIncome ?? r.income.net.value;
             if (doc.type === 'payslip' || !s.income || s.income.source === 'manual') {
-              next.income = { net, gross: r.income.gross?.value ?? s.income?.gross ?? null, frequency: r.income.frequency ?? 'monthly', employer: r.income.employer ?? s.income?.employer ?? null, payday: 25, source: 'document' };
+              next.income = {
+                net,
+                gross: r.payslipSummary?.grossEarnings ?? r.income.gross?.value ?? s.income?.gross ?? null,
+                frequency: r.income.frequency ?? 'monthly',
+                employer: r.payslipSummary?.employer ?? r.income.employer ?? s.income?.employer ?? null,
+                payday: 25,
+                source: 'document',
+              };
             }
           }
           if (r.documentType === 'bank_statement') {
@@ -312,7 +315,11 @@ export const useStore = create<Data & Actions>()(
         },
 
         addFailedDocument: (doc) => set((s) => ({ documents: [{ ...doc, status: 'failed' }, ...s.documents.filter((d) => d.id !== doc.id)] })),
-        removeDocument: (id) => set((s) => ({ documents: s.documents.filter((d) => d.id !== id) })),
+        removeDocument: (id) =>
+          set((s) => ({
+            documents: s.documents.filter((d) => d.id !== id),
+            transactions: s.transactions.map((transaction) => (transaction.sourceDocId === id ? { ...transaction, sourceDocId: undefined } : transaction)),
+          })),
 
         recategorize: (txId, category) =>
           set((s) => ({ transactions: s.transactions.map((t) => (t.id === txId ? { ...t, category, confidence: 'high', question: undefined } : t)) })),
@@ -404,7 +411,22 @@ export const useStore = create<Data & Actions>()(
           return id;
         },
         updateGoal: (id, g) => set((s) => ({ goals: s.goals.map((x) => (x.id === id ? { ...x, ...g } : x)) })),
-        deleteGoal: (id) => set((s) => ({ goals: s.goals.filter((g) => g.id !== id) })),
+        deleteGoal: (id) =>
+          set((s) => {
+            const foundMoney = s.foundMoney.flatMap((item) => {
+              const removedAllocations = item.allocations?.filter((allocation) => allocation.goalId === id) ?? [];
+              if (!removedAllocations.length) return [item];
+              const returned = removedAllocations.reduce((total, allocation) => total + allocation.amount, 0);
+              const remaining = item.allocations?.filter((allocation) => allocation.goalId !== id) ?? [];
+              const updated = remaining.length
+                ? { ...item, amount: remaining.reduce((total, allocation) => total + allocation.amount, 0), allocations: remaining }
+                : { ...item, status: 'pending' as const, allocations: undefined };
+              return remaining.length
+                ? [updated, { ...item, id: uid(), amount: returned, status: 'pending' as const, allocations: undefined, auto: false, headline: `${item.headline} (returned)` }]
+                : [updated];
+            });
+            return { goals: s.goals.filter((goal) => goal.id !== id), foundMoney };
+          }),
         contribute: (goalId, amount, source) =>
           set((s) => ({
             goals: s.goals.map((g) => (g.id === goalId ? { ...g, current: Math.max(0, g.current + amount), contributions: [{ id: uid(), date: today(), amount, source }, ...g.contributions] } : g)),
@@ -541,19 +563,38 @@ export const useStore = create<Data & Actions>()(
           }
         },
 
-        resetAll: () => set({ ...initialData }),
+        resetAll: () => set(initialData),
       };
-    },
-    {
-      name: 'finfeast-v1',
-      storage: createJSONStorage(() => AsyncStorage),
-      partialize: (s) => Object.fromEntries(Object.entries(s).filter(([, v]) => typeof v !== 'function')) as unknown as Data,
-    },
-  ),
-);
+    });
+
+export function getAppData(state: AppData & Actions = useStore.getState()): AppData {
+  return {
+    onboarded: state.onboarded,
+    profile: state.profile,
+    settings: state.settings,
+    manualMode: state.manualMode,
+    income: state.income,
+    weeklyFoodBudget: state.weeklyFoodBudget,
+    bills: state.bills,
+    transactions: state.transactions,
+    documents: state.documents,
+    plan: state.plan,
+    pendingPlan: state.pendingPlan,
+    pendingReason: state.pendingReason,
+    pantry: state.pantry,
+    groceryChecked: state.groceryChecked,
+    tried: state.tried,
+    goals: state.goals,
+    foundMoney: state.foundMoney,
+    weekHistory: state.weekHistory,
+    dismissedInsights: state.dismissedInsights,
+    assignedWeeks: state.assignedWeeks,
+    lastMonthProcessed: state.lastMonthProcessed,
+    lastPaydayProcessed: state.lastPaydayProcessed,
+    taxInfo: state.taxInfo,
+  };
+}
 
 export function exportData() {
-  const s = useStore.getState();
-  const data = Object.fromEntries(Object.entries(s).filter(([, v]) => typeof v !== 'function'));
-  return JSON.stringify({ exportedAt: new Date().toISOString(), app: 'FinFeast', data }, null, 2);
+  return JSON.stringify({ exportedAt: new Date().toISOString(), app: 'FinFeast', data: getAppData() }, null, 2);
 }

@@ -1,14 +1,9 @@
-/**
- * Document AI client.
- *
- * In production, documents go to the secured parsing backend, which masks PII and
- * runs the extraction prompt in lib/prompts.ts. This prototype ships an on-device
- * simulator that returns the same ExtractionResult shape so every screen, edge case
- * and confidence state can be exercised end to end.
- */
+/** Payslip PDFs are extracted on-device; other document types still use prototype samples. */
 import { addDays, monthStart, today, weekday } from '@/lib/dates';
 import { PRICE_FACTOR } from '@/lib/format';
 import type { Bill, Category, Confidence, Currency, DocType, IncomeFrequency, ReceiptItem, Transaction } from '@/store/types';
+import { summarizePayslip, PayslipPdfError, type PayslipBudgetSummary, type PayslipDocument } from './payslip';
+import { extractPayslipPdf } from './payslipPdf';
 
 export type Field<T> = { value: T; confidence: Confidence; sourceText: string };
 
@@ -23,6 +18,8 @@ export type ExtractionResult = {
     employer: string | null;
     deductions: { label: string; amount: number; confidence: Confidence }[];
   } | null;
+  payslip: PayslipDocument | null;
+  payslipSummary: PayslipBudgetSummary | null;
   recurringBills: Bill[];
   variableCategories: Partial<Record<Category, { monthly: number; count: number }>>;
   savingsTransfers: { label: string; monthly: number; confidence: Confidence }[];
@@ -32,7 +29,7 @@ export type ExtractionResult = {
   flags: ('legibility_low' | 'multiple_periods' | 'unusual_amount' | 'duplicate_suspected')[];
 };
 
-export type UploadInput = { name: string; size: number; mimeType?: string; sample?: SampleKind };
+export type UploadInput = { name: string; size: number; mimeType?: string; sample?: SampleKind; uri?: string };
 export type SampleKind = 'payslip' | 'statement' | 'receipt' | 'tax' | 'blurry';
 
 export const SAMPLES: { kind: SampleKind; label: string; name: string; icon: string }[] = [
@@ -42,7 +39,7 @@ export const SAMPLES: { kind: SampleKind; label: string; name: string; icon: str
   { kind: 'blurry', label: 'Blurry photo', name: 'IMG_blurry.jpg', icon: 'eye-off-outline' },
 ];
 
-export const SUPPORTED_TYPES = ['Payslips (PDF or photo)', 'Bank statements (PDF)', 'Grocery & restaurant receipts (photo)', 'Tax certificates (IRP5 / W-2 / P60)'];
+export const SUPPORTED_TYPES = ['Payslips (text-based PDF; photo OCR coming soon)', 'Bank statements (PDF)', 'Grocery & restaurant receipts (photo)', 'Tax certificates (IRP5 / W-2 / P60)'];
 
 /** Stable content fingerprint for duplicate detection (stand-in for a SHA-256 file hash). */
 export function fileHash(input: UploadInput) {
@@ -69,6 +66,19 @@ export function suggestType(input: UploadInput): DocType {
 export function pageCount(type: DocType, input: UploadInput) {
   if (type === 'bank_statement') return Math.max(3, Math.min(6, Math.round(input.size / 120000) || 4));
   return 1;
+}
+
+async function parsePayslipPdf(uri: string): Promise<{ document: PayslipDocument; pages: number }> {
+  try {
+    const { document, pages } = await extractPayslipPdf(uri);
+    if (document.deductions.netPay === null) {
+      throw new ParseError('illegible', 'Net pay was not found in the selected payslip. Try a text-based PDF or enter your totals manually.');
+    }
+    return { document, pages };
+  } catch (error) {
+    if (error instanceof PayslipPdfError) throw new ParseError(error.reason, error.message);
+    throw error;
+  }
 }
 
 function rng(seed: number) {
@@ -126,7 +136,7 @@ function statementTransactions(seed: number, currency: Currency, docId: string):
   return out.sort((a, b) => b.date.localeCompare(a.date));
 }
 
-/** Simulated extraction. Resolves after the processing animation; may throw ParseError. */
+/** Resolves after extraction and the processing animation; may throw ParseError. */
 export async function parseDocument(input: UploadInput, type: DocType, currency: Currency, docId: string): Promise<ExtractionResult> {
   await new Promise((res) => setTimeout(res, 50));
   if (input.sample === 'blurry' || /blur/i.test(input.name)) throw new ParseError('illegible');
@@ -137,6 +147,8 @@ export async function parseDocument(input: UploadInput, type: DocType, currency:
     pages: pageCount(type, input),
     period: { start: null, end: null },
     income: null,
+    payslip: null,
+    payslipSummary: null,
     recurringBills: [],
     variableCategories: {},
     savingsTransfers: [],
@@ -148,6 +160,40 @@ export async function parseDocument(input: UploadInput, type: DocType, currency:
   const seed = parseInt(fileHash(input), 16);
 
   if (type === 'payslip') {
+    if (input.uri) {
+      if (input.mimeType !== 'application/pdf' && !input.name.toLowerCase().endsWith('.pdf')) {
+        throw new ParseError('unsupported', 'Payslip photo OCR is not available yet. Choose a text-based PDF instead.');
+      }
+      if (input.size > 20 * 1024 * 1024) throw new ParseError('unsupported', 'This PDF is larger than the 20 MB limit.');
+      const { document, pages } = await parsePayslipPdf(input.uri);
+      const toField = (label: string, value: number | null) =>
+        value === null ? null : { value, confidence: 'high' as const, sourceText: `${label}: ${value.toFixed(2)}` };
+      const deductions: { label: string; amount: number; confidence: Confidence }[] = [
+        ...[
+        { label: 'UIF', amount: document.deductions.uif, confidence: 'high' as const },
+        { label: 'Group Life', amount: document.deductions.groupLife, confidence: 'high' as const },
+        ].flatMap((deduction) =>
+          deduction.amount === null ? [] : [{ ...deduction, amount: deduction.amount, confidence: 'high' as Confidence }],
+        ),
+        ...document.deductions.other.flatMap((item) =>
+          item.amount === null ? [] : [{ label: item.label, amount: item.amount, confidence: 'high' as Confidence }],
+        ),
+      ];
+      return {
+        ...base,
+        pages,
+        period: { start: document.periodStart, end: document.periodEnd },
+        income: {
+          gross: toField('Total Earnings', document.earnings.total),
+          net: toField('Net Pay', document.deductions.netPay),
+          frequency: 'monthly',
+          employer: document.employer.name,
+          deductions,
+        },
+        payslip: document,
+        payslipSummary: summarizePayslip(document),
+      };
+    }
     return {
       ...base,
       period: { start: monthStart(), end: today() },
@@ -163,6 +209,7 @@ export async function parseDocument(input: UploadInput, type: DocType, currency:
           { label: 'Medical aid', amount: money(139, currency), confidence: 'medium' },
         ],
       },
+      payslip: null,
     };
   }
 
@@ -228,7 +275,11 @@ export async function parseDocument(input: UploadInput, type: DocType, currency:
 }
 
 export class ParseError extends Error {
-  constructor(public reason: 'illegible' | 'unsupported') {
-    super(reason);
+  constructor(
+    public reason: 'illegible' | 'unsupported',
+    message: string = reason,
+  ) {
+    super(message);
+    this.name = 'ParseError';
   }
 }

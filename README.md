@@ -11,7 +11,11 @@ npx expo start          # press i / a for simulators, or scan with Expo Go
 npx expo start --web    # browser
 ```
 
-Checks: `npx tsc --noEmit` and `npx eslint src`.
+Checks: `npx tsc --noEmit`, `npx expo lint`, and `npm run test:payslip` (Node.js 22+).
+
+## Accounts and data
+
+Email sign-in and Supabase cloud sync are temporarily disabled while account setup is being completed. No account is needed to use the app; app data is saved locally on the device.
 
 ## What's in the prototype
 
@@ -29,13 +33,13 @@ Engines (pure TypeScript, no UI):
 
 - `src/lib/mealPlanner.ts` — constraint solver: hard filters → budget ceiling → calories ±10% & protein floor → variety → batch cooking; pack-rounded, consolidated grocery list with pantry credits; honest `budget_floor_conflict`.
 - `src/lib/budget.ts` — income − bills − committed goals = flexible money; month forecast; risky days; Security Meter.
+- `src/lib/payslip.ts` — South African payslip DTO extraction, currency normalization, validation warnings, and disposable-income analysis.
 - `src/lib/insights.ts` — ranked, data-anchored insights ((money × actionability) ÷ effort), never shaming.
-- `src/store/useStore.ts` — persisted state (AsyncStorage), Found Money routing rules, weekly rollover (underspend → Found Money, overspend → budget-light week), payday and month-end rules.
+- `src/store/useStore.ts` — app state, locally persisted on the device, Found Money routing rules, weekly rollover (underspend → Found Money, overspend → budget-light week), payday and month-end rules.
 
 ## Not real yet
 
-- **Document AI is simulated on-device** (`src/lib/parser.ts`) so every state can be exercised. Production should send files to a backend that masks PII and runs the prompts in `src/lib/prompts.ts`; never ship a model API key in the app.
-- **Sign-in is simulated** (any 6-digit code; Google/Apple buttons just continue). Data lives on the device only.
+- **Payslip PDFs are parsed locally** with PDF.js on web and native PDFKit/PDFBox extraction on iOS/Android; personal details and financial figures are not uploaded. Web loads the matching PDF.js worker from cdnjs, so web extraction needs an internet connection. Mobile PDF extraction requires an app development build and is unavailable in Expo Go. Scanned payslip photos do not have OCR yet, and other document types still use prototype sample data.
 - **Notifications** are stored as preferences; no push service is wired up.
 - Meal "photos" are emoji tiles; recipe prices are a fixed South African price list scaled for other currencies.
 - P2 items (bank feeds, household sharing, investment partners) are shown as "coming soon".

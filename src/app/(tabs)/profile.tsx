@@ -42,6 +42,7 @@ export default function Profile() {
   const [draft, setDraft] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [exported, setExported] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const toggleAllergy = (a: Allergen) => s.setProfile({ allergies: p.allergies.includes(a) ? p.allergies.filter((x) => x !== a) : [...p.allergies, a] });
 
   return (
@@ -56,7 +57,7 @@ export default function Profile() {
           <View style={{ flex: 1 }}>
             <Txt v="h2">{p.name || 'Your profile'}</Txt>
             <Txt v="small" muted>
-              {p.email.includes('@') ? p.email : p.email ? `Signed in with ${p.email.split('-')[0]}` : 'Not signed in'}
+              Saved on this device
             </Txt>
           </View>
           {s.manualMode ? <Pill label="Manual mode" tone="amber" /> : <Pill label="Document mode" tone="green" />}
@@ -174,9 +175,9 @@ export default function Profile() {
       <Section title="Security & your data">
         <Card tone="green" style={{ gap: 10 }}>
           {[
-            ['lock-closed-outline', 'Encrypted in transit (TLS 1.3) and at rest (AES-256), with per-user keys for documents.'],
-            ['eye-off-outline', 'Names, ID and account numbers are masked before any AI reads a document.'],
-            ['time-outline', 'Raw documents leave processing within 30 days — or the moment you delete them.'],
+            ['phone-portrait-outline', 'Your data is stored on this device for now; account sign-in and cloud sync are coming soon.'],
+            ['eye-off-outline', 'Document parsing is simulated in this prototype; original document files are not uploaded.'],
+            ['time-outline', 'Your financial records stay on this device.'],
             ['ban-outline', 'Never sold. No third-party ad tracking.'],
           ].map(([icon, text]) => (
             <Row key={text} gap={10} style={{ alignItems: 'flex-start' }}>
@@ -197,7 +198,7 @@ export default function Profile() {
               setExported(true);
             }}
           />
-          <Button label="Delete all my data" icon="trash-outline" variant="destructive" onPress={() => setConfirmDelete(true)} />
+          <Button label="Delete all my data" icon="trash-outline" variant="destructive" disabled={deleting} onPress={() => setConfirmDelete(true)} />
         </View>
       </Section>
 
@@ -240,16 +241,19 @@ export default function Profile() {
             <Button
               label="Permanently delete my data"
               variant="destructive"
-              onPress={() => {
+              disabled={deleting}
+              onPress={async () => {
                 setConfirmDelete(false);
+                setDeleting(true);
                 s.resetAll();
+                setDeleting(false);
                 router.replace('/onboarding');
               }}
             />
             <Button label="Cancel" variant="ghost" tone="gray" onPress={() => setConfirmDelete(false)} />
           </>
         }>
-        <Txt muted>This removes your documents, transactions, plans, goals and settings from this device. It can’t be undone — export first if you’d like a copy.</Txt>
+        <Txt muted>This permanently deletes your documents, transactions, plans, goals and settings from this device. Export first if you’d like a copy.</Txt>
       </Sheet>
     </Screen>
   );

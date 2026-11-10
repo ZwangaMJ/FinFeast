@@ -113,7 +113,7 @@ function Welcome({ onStart, onDoc }: { onStart: () => void; onDoc: () => void })
           </Row>
         ))}
       </View>
-      <TrustStrip text="Your data is encrypted end-to-end. Delete everything anytime." />
+      <TrustStrip text="Your data stays on this device for now. Delete everything anytime." />
       <Button label="Start free" onPress={onStart} style={{ marginTop: 6 }} />
       <Button label="I have a document ready" variant="secondary" icon="document-attach-outline" onPress={onDoc} />
     </View>
@@ -122,44 +122,18 @@ function Welcome({ onStart, onDoc }: { onStart: () => void; onDoc: () => void })
 
 function Account({ onDone }: { onDone: () => void }) {
   const setProfile = useStore((s) => s.setProfile);
-  const [name, setName] = useState(useStore.getState().profile.name);
-  const [email, setEmail] = useState('');
-  const [sent, setSent] = useState(false);
-  const [code, setCode] = useState('');
-  const valid = /^\S+@\S+\.\S+$/.test(email);
-  const finish = (e = email) => {
-    setProfile({ name: name.trim(), email: e });
+  const savedProfile = useStore((s) => s.profile);
+  const [name, setName] = useState(savedProfile.name);
+  const finish = () => {
+    setProfile({ ...(name.trim() ? { name: name.trim() } : {}) });
     onDone();
   };
   return (
     <View style={{ gap: 14 }}>
-      <Txt v="title">Create your account</Txt>
-      <Txt muted>Just enough to keep your plan safe. No card needed.</Txt>
+      <Txt v="title">Set up your profile</Txt>
+      <Txt muted>No sign-in needed. Your data stays on this device while account sync is being set up.</Txt>
       <Field label="What should we call you?" value={name} onChange={setName} placeholder="First name" />
-      {!sent ? (
-        <>
-          <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" keyboardType="email-address" />
-          <Button label="Email me a sign-in code" disabled={!valid} onPress={() => setSent(true)} />
-        </>
-      ) : (
-        <>
-          <Txt v="small" muted>
-            We sent a 6-digit code to {email}. (Prototype: any 6 digits work.)
-          </Txt>
-          <Field label="Code" value={code} onChange={(t) => setCode(t.replace(/\D/g, '').slice(0, 6))} placeholder="123456" keyboardType="number-pad" autoFocus />
-          <Button label="Verify & continue" disabled={code.length !== 6} onPress={() => finish()} />
-          <Button label="Use a different email" variant="ghost" onPress={() => setSent(false)} />
-        </>
-      )}
-      <Row gap={10} style={{ marginVertical: 4 }}>
-        <View style={{ flex: 1, height: 1, backgroundColor: '#8884' }} />
-        <Txt v="caption" muted>
-          or
-        </Txt>
-        <View style={{ flex: 1, height: 1, backgroundColor: '#8884' }} />
-      </Row>
-      <Button label="Continue with Google" icon="logo-google" variant="secondary" onPress={() => finish('google-account')} />
-      <Button label="Continue with Apple" icon="logo-apple" variant="secondary" onPress={() => finish('apple-account')} />
+      <Button label="Continue" onPress={finish} />
     </View>
   );
 }

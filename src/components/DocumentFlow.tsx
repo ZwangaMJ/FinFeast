@@ -37,7 +37,7 @@ const TYPE_OPTIONS: { type: DocType; label: string; icon: string }[] = [
   { type: 'unknown', label: 'Not sure', icon: 'help-circle-outline' },
 ];
 
-const STATUS = ['Encrypting your document…', 'Reading the numbers…', 'Sorting income from expenses…', 'Building your first budget…'];
+const STATUS = ['Opening your document…', 'Reading the numbers…', 'Checking the totals…', 'Building your first budget…'];
 
 export function DocumentFlow({ mode = 'upload', onDone, onManual }: { mode?: 'upload' | 'onboarding' | 'receipt'; onDone: () => void; onManual?: () => void }) {
   const [step, setStep] = useState<Step>({ kind: 'pick' });
@@ -73,11 +73,11 @@ export function DocumentFlow({ mode = 'upload', onDone, onManual }: { mode?: 'up
             setStep({ kind: 'review', input: step.input, doc, result });
           }
         }}
-        onError={(reason) => {
+        onError={(reason, detail) => {
           if (reason === 'illegible') {
             useStore.getState().addFailedDocument({ id: uid(), name: step.input.name, type: step.type, hash: fileHash(step.input), addedAt: new Date().toISOString(), status: 'failed', pages: 1, summary: "Couldn't read clearly" });
           }
-          setStep({ kind: 'error', reason, input: step.input, type: step.type });
+          setStep({ kind: 'error', reason, detail, input: step.input, type: step.type });
         }}
       />
     );
@@ -123,14 +123,14 @@ function PickStep({ mode, onPicked, onManual }: { mode: string; onPicked: (i: Up
     const res = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7 });
     if (!res.canceled && res.assets[0]) {
       const a = res.assets[0];
-      onPicked({ name: a.fileName ?? `scan_${Date.now()}.jpg`, size: a.fileSize ?? a.width * a.height, mimeType: a.mimeType ?? 'image/jpeg' });
+      onPicked({ name: a.fileName ?? `scan_${Date.now()}.jpg`, size: a.fileSize ?? a.width * a.height, mimeType: a.mimeType ?? 'image/jpeg', uri: a.uri });
     }
   };
   const files = async () => {
-    const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: true });
+    const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: true, base64: false });
     if (!res.canceled && res.assets[0]) {
       const a = res.assets[0];
-      onPicked({ name: a.name, size: a.size ?? 0, mimeType: a.mimeType ?? undefined });
+      onPicked({ name: a.name, size: a.size ?? 0, mimeType: a.mimeType ?? undefined, uri: a.uri });
     }
   };
 
@@ -178,7 +178,7 @@ function PickStep({ mode, onPicked, onManual }: { mode: string; onPicked: (i: Up
             <Button label="Not now" variant="ghost" tone="gray" onPress={() => setCamHelp(false)} />
           </>
         }>
-        <Txt muted>We use the camera only while you scan. Photos are encrypted, read by our AI to pull out totals, then deleted from processing within 30 days (you can delete sooner).</Txt>
+        <Txt muted>Camera photos stay on this device. Text-based payslip PDFs can be read locally; photo OCR is not available yet.</Txt>
         <Txt v="small" muted>
           Tip: flat surface, good light, all four corners in frame.
         </Txt>
@@ -216,7 +216,17 @@ function TypeStep({ step, onBack, onConfirm }: { step: Extract<Step, { kind: 'ty
   );
 }
 
-function ProcessingStep({ input, type, onResult, onError }: { input: UploadInput; type: DocType; onResult: (doc: DocRecord, r: ExtractionResult) => void; onError: (reason: 'illegible' | 'unsupported') => void }) {
+function ProcessingStep({
+  input,
+  type,
+  onResult,
+  onError,
+}: {
+  input: UploadInput;
+  type: DocType;
+  onResult: (doc: DocRecord, r: ExtractionResult) => void;
+  onError: (reason: 'illegible' | 'unsupported', detail?: string) => void;
+}) {
   const currency = useCurrency();
   const pages = pageCount(type, input);
   const [elapsed, setElapsed] = useState(0);
@@ -234,7 +244,7 @@ function ProcessingStep({ input, type, onResult, onError }: { input: UploadInput
         const r = result as ExtractionResult;
         const summary =
           r.documentType === 'payslip'
-            ? `Net pay ${money(r.income?.net?.value ?? 0, currency)}`
+            ? `Net pay ${money(r.income?.net?.value ?? 0, r.payslip?.currency ?? currency)}`
             : r.documentType === 'bank_statement'
               ? `${r.transactions.length} transactions · ${r.recurringBills.length} bills`
               : r.receipt
@@ -244,7 +254,7 @@ function ProcessingStep({ input, type, onResult, onError }: { input: UploadInput
       } catch (e) {
         if (cancelled) return;
         await new Promise((res) => setTimeout(res, 1600));
-        onError(e instanceof ParseError ? e.reason : 'illegible');
+        onError(e instanceof ParseError ? e.reason : 'illegible', e instanceof Error ? e.message : undefined);
       }
     };
     run();
@@ -273,7 +283,7 @@ function ProcessingStep({ input, type, onResult, onError }: { input: UploadInput
           Page {page} of {pages}
         </Txt>
       ) : null}
-      <TrustStrip text="Names, ID and account numbers are masked before our AI sees anything." />
+      <TrustStrip text="Payslip PDFs are read on this device. Nothing is used until you confirm." />
       <Txt v="small" muted center>
         You can leave this screen — we’ll let you know when it’s ready.
       </Txt>
@@ -311,8 +321,8 @@ function ConflictStep({ current, previous, onChoose }: { current: number; previo
 
 function ErrorStep({ step, onRetry, onManual, onDone }: { step: Extract<Step, { kind: 'error' }>; onRetry: () => void; onManual?: () => void; onDone: () => void }) {
   const copy = {
-    illegible: { icon: 'eye-off-outline', title: 'We couldn’t read this clearly', body: 'Try again in better light, or enter the totals manually. We’ve kept the document in your queue.' },
-    unsupported: { icon: 'document-outline', title: 'We can’t read this type of document yet', body: 'Here’s what works today:' },
+    illegible: { icon: 'eye-off-outline', title: 'We couldn’t read this clearly', body: step.detail ?? 'Try again in better light, or enter the totals manually. We’ve kept the document in your queue.' },
+    unsupported: { icon: 'document-outline', title: 'We can’t read this type of document yet', body: step.detail ?? 'Here’s what works today:' },
     duplicate: { icon: 'copy-outline', title: 'You’ve already added this one', body: step.detail ?? '' },
   }[step.reason];
   return (
@@ -392,6 +402,35 @@ function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: Extrac
                 {fmt(d.amount)}
               </Txt>
             </Row>
+          ))}
+        </Card>
+      ) : null}
+
+      {result.payslip && result.payslipSummary ? (
+        <Card style={{ gap: 8 }}>
+          <Txt v="smallStrong" muted>
+            Payslip breakdown · {result.payslip.employee.payPeriod ?? 'period unavailable'}
+          </Txt>
+          {result.payslip.employer.name ? <Txt v="small">{result.payslip.employer.name}</Txt> : null}
+          {[
+            ['Cash component', result.payslip.earnings.cashComponent],
+            ['Overtime 1.5', result.payslip.earnings.overtime15?.amount ?? null],
+            ['Gross package', result.payslipSummary.grossPackage],
+            ['Company contributions', result.payslip.companyContributions.total],
+            ['YTD taxable earnings', result.payslip.ytdTotals.taxableEarnings],
+          ]
+            .filter((entry): entry is [string, number] => entry[1] !== null)
+            .map(([label, amount]) => (
+              <Row key={label} style={{ justifyContent: 'space-between' }}>
+                <Txt v="small">{label}</Txt>
+                <Txt v="small" tabular>{money(amount, 'ZAR')}</Txt>
+              </Row>
+            ))}
+          <Txt v="caption" muted>
+            UIF is {result.payslipSummary.fixedDeductions.uif.percentOfGrossEarnings?.toFixed(2) ?? '—'}% and Group Life is {result.payslipSummary.fixedDeductions.groupLife.percentOfGrossEarnings?.toFixed(2) ?? '—'}% of gross earnings.
+          </Txt>
+          {result.payslip.warnings.map((warning) => (
+            <Txt key={warning} v="caption" color={c.amber}>{warning}</Txt>
           ))}
         </Card>
       ) : null}

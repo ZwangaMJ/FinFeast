@@ -5,29 +5,35 @@ import { useFonts } from 'expo-font';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { useStore } from '@/store/useStore';
+import { useAuthStore } from '@/store/useAuthStore';
+import { Button, Txt } from '@/components/ui';
 import { useTheme } from '@/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
-function useHydrated() {
-  return useSyncExternalStore(
-    (cb) => useStore.persist.onFinishHydration(cb),
-    () => useStore.persist.hasHydrated(),
-    () => false,
-  );
-}
-
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({ ...Ionicons.font, DMSans_400Regular, DMSans_500Medium, DMSans_700Bold, Fraunces_600SemiBold });
-  const hydrated = useHydrated();
+  const authStatus = useAuthStore((s) => s.status);
+  const initialize = useAuthStore((s) => s.initialize);
+  const authError = useAuthStore((s) => s.error);
   const { c, dark } = useTheme();
-  const ready = fontsLoaded && hydrated;
+  const [bootComplete, setBootComplete] = useState(false);
+  const ready = fontsLoaded && bootComplete;
+
+  useEffect(() => {
+    let active = true;
+    void initialize().finally(() => {
+      if (active) setBootComplete(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [initialize]);
 
   useEffect(() => {
     if (ready) SplashScreen.hideAsync().catch(() => {});
@@ -35,6 +41,20 @@ export default function RootLayout() {
 
   // Themed blank canvas while fonts and saved data load — no white flash in dark mode
   if (!ready) return <View style={{ flex: 1, backgroundColor: c.background }} />;
+
+  if (authStatus === 'error') {
+    return (
+      <View style={{ flex: 1, backgroundColor: c.background, justifyContent: 'center', padding: 24, gap: 14 }}>
+        <Txt v="title">Couldn’t load your data</Txt>
+        <Txt muted>{authError ?? 'FinFeast could not load your saved device data.'}</Txt>
+        <Button label="Retry loading" onPress={() => void useAuthStore.getState().retry()} />
+      </View>
+    );
+  }
+
+  if (authStatus === 'checking') {
+    return <View style={{ flex: 1, backgroundColor: c.background }} />;
+  }
 
   const navTheme = {
     ...(dark ? DarkTheme : DefaultTheme),
@@ -46,17 +66,24 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <ThemeProvider value={navTheme}>
           <StatusBar style={dark ? 'light' : 'dark'} />
-          <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.background }, animation: 'fade_from_bottom', animationDuration: 250 }}>
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="onboarding" options={{ gestureEnabled: false, animation: 'fade' }} />
-            <Stack.Screen name="upload" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
-            <Stack.Screen name="insights" options={{ animation: 'slide_from_right' }} />
-            <Stack.Screen name="grocery" options={{ animation: 'slide_from_right' }} />
-            <Stack.Screen name="pantry" options={{ animation: 'slide_from_right' }} />
-            <Stack.Screen name="meal/[id]" options={{ animation: 'slide_from_right' }} />
-            <Stack.Screen name="goal/[id]" options={{ animation: 'slide_from_right' }} />
-            <Stack.Screen name="goal/new" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
-          </Stack>
+          <View style={{ flex: 1 }}>
+            {authStatus === 'ready' && authError ? (
+              <View style={{ padding: 12, backgroundColor: c.destructiveWash }}>
+                <Txt v="small" color={c.destructive}>{authError}</Txt>
+              </View>
+            ) : null}
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.background }, animation: 'fade_from_bottom', animationDuration: 250 }}>
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen name="onboarding" options={{ gestureEnabled: false, animation: 'fade' }} />
+              <Stack.Screen name="upload" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+              <Stack.Screen name="insights" options={{ animation: 'slide_from_right' }} />
+              <Stack.Screen name="grocery" options={{ animation: 'slide_from_right' }} />
+              <Stack.Screen name="pantry" options={{ animation: 'slide_from_right' }} />
+              <Stack.Screen name="meal/[id]" options={{ animation: 'slide_from_right' }} />
+              <Stack.Screen name="goal/[id]" options={{ animation: 'slide_from_right' }} />
+              <Stack.Screen name="goal/new" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+            </Stack>
+          </View>
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
