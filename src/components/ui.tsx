@@ -545,7 +545,7 @@ export function TrustStrip({ text }: { text?: string }) {
     <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start', backgroundColor: tone('green').bg, borderRadius: radius.md, padding: 14 }}>
       <Icon name="lock-closed" size={18} color={tone('green').fg} />
       <Txt v="small" color={tone('green').fg} style={{ flex: 1 }}>
-        {text ?? 'Encrypted in transit & at rest. Read only by our AI to build your budget. Never sold, never shared. Delete anytime.'}
+        {text ?? 'Your documents stay on this device. Payslip PDFs are parsed locally; photo OCR is not available yet.'}
       </Txt>
     </View>
   );
