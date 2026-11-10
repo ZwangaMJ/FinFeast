@@ -3,9 +3,8 @@ import { useColorScheme } from 'react-native';
 import { useStore } from '@/store/useStore';
 
 /**
- * Semantic colour tokens (spec §8.2). Green = spending well, amber = food,
- * blue = wealth. Values are hand-tuned sRGB equivalents of the oklch spec
- * targets, checked for 4.5:1 text contrast in both modes.
+ * Purple is the brand accent; green, amber, and blue retain their financial
+ * meanings. Values are hand-tuned sRGB equivalents checked for both modes.
  */
 const light = {
   background: '#F7F3EC',
@@ -15,9 +14,11 @@ const light = {
   text: '#1F1B16',
   textMuted: '#655D52',
   textFaint: '#8C8478',
-  primary: '#2E7A4D',
+  primary: '#6242A5',
   onPrimary: '#FFFFFF',
-  primaryWash: '#E3F0E6',
+  primaryWash: '#EEE8FA',
+  success: '#2E7A4D',
+  successWash: '#E3F0E6',
   amber: '#B86E12',
   amberStrong: '#D98A1E',
   amberWash: '#FBEBD3',
@@ -38,9 +39,11 @@ const dark: typeof light = {
   text: '#F3EEE6',
   textMuted: '#B4AA9C',
   textFaint: '#8E8578',
-  primary: '#62D394',
-  onPrimary: '#0E2A1A',
-  primaryWash: '#1C3426',
+  primary: '#B9A5F4',
+  onPrimary: '#24183D',
+  primaryWash: '#32264B',
+  success: '#62D394',
+  successWash: '#1C3426',
   amber: '#F2B45C',
   amberStrong: '#F2B45C',
   amberWash: '#3A2D18',
@@ -54,7 +57,7 @@ const dark: typeof light = {
 };
 
 export type Palette = typeof light;
-export type Tone = 'green' | 'amber' | 'blue' | 'red' | 'gray';
+export type Tone = 'green' | 'purple' | 'amber' | 'blue' | 'red' | 'gray';
 
 export const fonts = {
   regular: 'DMSans_400Regular',
@@ -72,7 +75,8 @@ export function useTheme() {
   const c = scheme === 'dark' ? dark : light;
   const tone = (t: Tone) =>
     ({
-      green: { fg: c.primary, bg: c.primaryWash },
+      green: { fg: c.success, bg: c.successWash },
+      purple: { fg: c.primary, bg: c.primaryWash },
       amber: { fg: c.amber, bg: c.amberWash },
       blue: { fg: c.blue, bg: c.blueWash },
       red: { fg: c.destructive, bg: c.destructiveWash },

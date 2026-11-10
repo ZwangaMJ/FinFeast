@@ -1,7 +1,16 @@
-/** Payslip PDFs are extracted on-device; other document types still use prototype samples. */
+/** Payslip and bank statement PDFs are parsed locally; remaining document types use prototype samples. */
 import { addDays, monthStart, today, weekday } from '@/lib/dates';
 import { PRICE_FACTOR } from '@/lib/format';
 import type { Bill, Category, Confidence, Currency, DocType, IncomeFrequency, ReceiptItem, Transaction } from '@/store/types';
+import {
+  BankStatementPdfError,
+  parseBankStatementItems,
+  parseBankStatementText,
+  recurringBillsFromStatement,
+  toAppTransactions,
+  type BankStatementDocument,
+} from './bankStatement';
+import { extractBankStatementPdf } from './bankStatementPdf';
 import { summarizePayslip, PayslipPdfError, type PayslipBudgetSummary, type PayslipDocument } from './payslip';
 import { extractPayslipPdf } from './payslipPdf';
 
@@ -18,6 +27,7 @@ export type ExtractionResult = {
     employer: string | null;
     deductions: { label: string; amount: number; confidence: Confidence }[];
   } | null;
+  bankStatement: BankStatementDocument | null;
   payslip: PayslipDocument | null;
   payslipSummary: PayslipBudgetSummary | null;
   recurringBills: Bill[];
@@ -39,7 +49,7 @@ export const SAMPLES: { kind: SampleKind; label: string; name: string; icon: str
   { kind: 'blurry', label: 'Blurry photo', name: 'IMG_blurry.jpg', icon: 'eye-off-outline' },
 ];
 
-export const SUPPORTED_TYPES = ['Payslips (text-based PDF; photo OCR coming soon)', 'Bank statements (PDF)', 'Grocery & restaurant receipts (photo)', 'Tax certificates (IRP5 / W-2 / P60)'];
+export const SUPPORTED_TYPES = ['Payslips (text-based PDF; photo OCR coming soon)', 'Bank statements (text-based PDF; scanned OCR coming soon)', 'Grocery & restaurant receipts (photo)', 'Tax certificates (IRP5 / W-2 / P60)'];
 
 /** Stable content fingerprint for duplicate detection (stand-in for a SHA-256 file hash). */
 export function fileHash(input: UploadInput) {
@@ -79,6 +89,24 @@ async function parsePayslipPdf(uri: string): Promise<{ document: PayslipDocument
     if (error instanceof PayslipPdfError) throw new ParseError(error.reason, error.message);
     throw error;
   }
+}
+
+async function parseBankStatementPdf(uri: string): Promise<BankStatementDocument> {
+  try {
+    const extracted = await extractBankStatementPdf(uri);
+    return extracted.items
+      ? parseBankStatementItems(extracted.items, extracted.pages)
+      : parseBankStatementText(extracted.text, extracted.pages);
+  } catch (error) {
+    if (error instanceof BankStatementPdfError) throw new ParseError(error.reason, error.message);
+    throw error;
+  }
+}
+
+function averageMonthly(amount: number, start: string | null, end: string | null): number {
+  if (!start || !end) return Math.round(amount * 100) / 100;
+  const days = Math.max(1, (Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86400000 + 1);
+  return Math.round((amount * 30.4375 / days) * 100) / 100;
 }
 
 function rng(seed: number) {
@@ -147,6 +175,7 @@ export async function parseDocument(input: UploadInput, type: DocType, currency:
     pages: pageCount(type, input),
     period: { start: null, end: null },
     income: null,
+    bankStatement: null,
     payslip: null,
     payslipSummary: null,
     recurringBills: [],
@@ -214,6 +243,58 @@ export async function parseDocument(input: UploadInput, type: DocType, currency:
   }
 
   if (type === 'bank_statement') {
+    if (input.uri) {
+      if (input.mimeType !== 'application/pdf' && !input.name.toLowerCase().endsWith('.pdf')) {
+        throw new ParseError('unsupported', 'Choose a PDF bank statement. Photo OCR is not available yet.');
+      }
+      if (input.size > 20 * 1024 * 1024) throw new ParseError('unsupported', 'This PDF is larger than the 20 MB limit.');
+      const bankStatement = await parseBankStatementPdf(input.uri);
+      const transactions = toAppTransactions(bankStatement, docId);
+      const start = bankStatement.period.start;
+      const end = bankStatement.period.end;
+      const categoryMonthly = (categories: readonly Category[]) => {
+        const matching = transactions.filter((transaction) => transaction.kind === 'expense' && categories.includes(transaction.category));
+        return {
+          monthly: averageMonthly(matching.reduce((sum, transaction) => sum + transaction.amount, 0), start, end),
+          count: matching.length,
+        };
+      };
+      const savingsAmount = bankStatement.transactions
+        .filter((transaction) => transaction.flow === 'debit' && transaction.category === 'transfer' && /saving|investment|pocket/i.test(transaction.description))
+        .reduce((sum, transaction) => sum + transaction.amount, 0);
+      const netIncome = bankStatement.analysis.recognizedIncome > 0
+        ? averageMonthly(bankStatement.analysis.recognizedIncome, start, end)
+        : null;
+      return {
+        ...base,
+        pages: bankStatement.pages,
+        period: { start, end },
+        income: netIncome === null ? null : {
+          gross: null,
+          net: { value: netIncome, confidence: 'high', sourceText: `Recognized salary and income credits · ${start ?? 'period start unavailable'} to ${end ?? 'period end unavailable'}` },
+          frequency: 'monthly',
+          employer: null,
+          deductions: [],
+        },
+        bankStatement,
+        recurringBills: recurringBillsFromStatement(bankStatement),
+        variableCategories: {
+          food_grocery: categoryMonthly(['food_grocery']),
+          food_dining: categoryMonthly(['food_dining']),
+          transport: categoryMonthly(['transport']),
+          shopping: categoryMonthly(['shopping']),
+          entertainment: categoryMonthly(['entertainment']),
+          health: categoryMonthly(['health']),
+        },
+        savingsTransfers: savingsAmount > 0
+          ? [{ label: 'Savings / investment transfers', monthly: averageMonthly(savingsAmount, start, end), confidence: 'medium' }]
+          : [],
+        transactions,
+      };
+    }
+    if (input.sample !== 'statement') {
+      throw new ParseError('unsupported', 'A bank statement PDF is required. Choose a PDF with selectable text; scanned statement OCR is not available yet.');
+    }
     const tx = statementTransactions(seed, currency, docId);
     const monthsSpan = 2;
     const cat = (c: Category) => {

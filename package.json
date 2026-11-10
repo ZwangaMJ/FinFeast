@@ -56,7 +56,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test:payslip": "node --experimental-strip-types --test tests/payslip.test.mjs"
+    "test:payslip": "node --experimental-strip-types --test tests/payslip.test.mjs",
+    "test:bank-statement": "node --experimental-strip-types --test tests/bankStatement.test.mjs",
+    "test:finance-scenarios": "node --experimental-strip-types --test tests/financeScenarios.test.mjs"
   },
   "private": true
 }

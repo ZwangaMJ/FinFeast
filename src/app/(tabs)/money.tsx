@@ -1,6 +1,6 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 
 import { ForecastChart, HeatStrip, SpendBars } from '@/components/charts';
 import { AmountInput, Button, Card, Chip, Divider, EmptyState, Field, Icon, IconButton, ListRow, Pill, ProgressBar, Row, Screen, Section, Segmented, Sheet, Stepper, Txt, useCurrency } from '@/components/ui';
@@ -20,6 +20,7 @@ import {
 } from '@/lib/budget';
 import { addDays, DAY_LONG, monthName, monthStart, shortDate, today } from '@/lib/dates';
 import { money, PRICE_FACTOR } from '@/lib/format';
+import { FINANCE_SCENARIOS, financeScenarioData, parseFinanceScenario, type FinanceScenario, type FinanceScenarioData } from '@/lib/financeScenarios';
 import { planCost, servingCost } from '@/lib/mealPlanner';
 import type { Category, Transaction } from '@/store/types';
 import { useStore } from '@/store/useStore';
@@ -29,8 +30,13 @@ type Tab = 'overview' | 'transactions' | 'documents';
 
 export default function Money() {
   const [tab, setTab] = useState<Tab>('overview');
+  const params = useLocalSearchParams<{ data?: string }>();
+  const scenario = __DEV__ ? parseFinanceScenario(params.data) : 'demo';
+  const store = useStore();
+  const data = useMemo(() => financeScenarioData(store, scenario), [store, scenario]);
   return (
-    <Screen title="Money" subtitle={monthName()} right={<IconButton icon="add" label="Add a document" tone="green" onPress={() => router.push('/upload')} />}>
+    <Screen title="Money" subtitle={monthName()} right={scenario === 'demo' ? <IconButton icon="add" label="Add a document" tone="green" onPress={() => router.push('/upload')} /> : undefined}>
+      {__DEV__ ? <FinanceScenarioPicker value={scenario} onChange={(value) => router.setParams({ data: value === 'demo' ? undefined : value })} /> : null}
       <Segmented<Tab>
         value={tab}
         onChange={setTab}
@@ -41,16 +47,37 @@ export default function Money() {
         ]}
       />
       <View style={{ height: 16 }} />
-      {tab === 'overview' ? <Overview /> : tab === 'transactions' ? <Transactions /> : <Documents />}
+      {tab === 'overview' ? <Overview data={data} /> : tab === 'transactions' ? <Transactions key={scenario} data={data} scenario={scenario} /> : <Documents data={data} scenario={scenario} />}
     </Screen>
   );
 }
 
-function Overview() {
+function FinanceScenarioPicker({ value, onChange }: { value: FinanceScenario; onChange: (value: FinanceScenario) => void }) {
+  const { c } = useTheme();
+  return (
+    <View style={{ marginBottom: 14, gap: 6 }}>
+      <Txt v="caption" muted>DEV · Finance data</Txt>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+        {FINANCE_SCENARIOS.map((scenario) => (
+          <Chip
+            key={scenario.value}
+            small
+            label={scenario.label}
+            selected={scenario.value === value}
+            onPress={() => onChange(scenario.value)}
+            tone="purple"
+          />
+        ))}
+      </ScrollView>
+      <View style={{ height: 1, backgroundColor: c.border }} />
+    </View>
+  );
+}
+
+function Overview({ data: s }: { data: FinanceScenarioData }) {
   const { c, tone } = useTheme();
   const currency = useCurrency();
   const fmt = (n: number) => money(n, currency);
-  const s = useStore();
   const insights = useInsights();
   const f = useMemo(() => forecastMonth(s.income, s.bills, s.goals, s.transactions, s.weeklyFoodBudget), [s.income, s.bills, s.goals, s.transactions, s.weeklyFoodBudget]);
   const weeks = lastNWeeks(6).map((ws) => {
@@ -131,7 +158,7 @@ function Overview() {
         </Card>
       ) : null}
 
-      <WhatIf />
+      <WhatIf data={s} />
 
       <Section title="Food: actual vs plan">
         <Card style={{ gap: 10 }}>
@@ -233,11 +260,10 @@ function Overview() {
 }
 
 /** What-if simulator (P1): cook more nights / cancel subscriptions → monthly free cash & time-to-goal. */
-function WhatIf() {
+function WhatIf({ data: s }: { data: FinanceScenarioData }) {
   const { tone } = useTheme();
   const currency = useCurrency();
   const fmt = (n: number) => money(n, currency);
-  const s = useStore();
   const [nights, setNights] = useState(1);
   const [cancel, setCancel] = useState<string[]>([]);
   const ef = s.goals.find((g) => g.type === 'emergency');
@@ -285,19 +311,19 @@ function WhatIf() {
 
 const FILTERS: (Category | 'all')[] = ['all', 'food_grocery', 'food_dining', 'transport', 'shopping', 'entertainment', 'health', 'household', 'bills', 'income', 'savings'];
 
-function Transactions() {
+function Transactions({ data, scenario }: { data: FinanceScenarioData; scenario: FinanceScenario }) {
   const { c } = useTheme();
   const currency = useCurrency();
-  const tx = useStore((s) => s.transactions);
+  const tx = data.transactions;
   const recategorize = useStore((s) => s.recategorize);
   const [filter, setFilter] = useState<Category | 'all'>('all');
   const [selected, setSelected] = useState<Transaction | null>(null);
   const [adding, setAdding] = useState(false);
   const [limit, setLimit] = useState(40);
+  const canEdit = scenario === 'demo';
   const questions = tx.filter((t) => t.question);
   const list = tx.filter((t) => filter === 'all' || t.category === filter);
   const shown = list.slice(0, limit);
-
   return (
     <View style={{ gap: 12 }}>
       {questions.map((q) => (
@@ -310,7 +336,7 @@ function Transactions() {
           </Row>
           <Row gap={8} wrap>
             {(q.alternatives ?? []).map((a) => (
-              <Chip key={a} label={CATEGORY_LABEL[a]} onPress={() => recategorize(q.id, a)} />
+              <Chip key={a} label={CATEGORY_LABEL[a]} onPress={canEdit ? () => recategorize(q.id, a) : undefined} />
             ))}
           </Row>
         </Card>
@@ -322,7 +348,7 @@ function Transactions() {
           ))}
         </Row>
       </View>
-      <Button label="Add a transaction" icon="add" variant="secondary" small style={{ alignSelf: 'flex-start' }} onPress={() => setAdding(true)} />
+      {canEdit ? <Button label="Add a transaction" icon="add" variant="secondary" small style={{ alignSelf: 'flex-start' }} onPress={() => setAdding(true)} /> : null}
       {list.length === 0 ? (
         <EmptyState icon="receipt-outline" title="No transactions yet" body="Upload a bank statement or snap a receipt and they’ll appear here, already sorted." action={<Button label="Add a document" small onPress={() => router.push('/upload')} />} />
       ) : (
@@ -376,20 +402,22 @@ function Transactions() {
               </Card>
             ) : null}
             <Txt v="h3">Category</Txt>
-            <Row gap={8} wrap>
-              {VARIABLE_CATEGORIES.concat(['bills', 'savings']).map((cat) => (
-                <Chip
-                  key={cat}
-                  label={CATEGORY_LABEL[cat]}
-                  icon={CATEGORY_ICON[cat]}
-                  selected={selected.category === cat}
-                  onPress={() => {
-                    recategorize(selected.id, cat);
-                    setSelected(null);
-                  }}
-                />
-              ))}
-            </Row>
+            {canEdit ? (
+              <Row gap={8} wrap>
+                {VARIABLE_CATEGORIES.concat(['bills', 'savings']).map((cat) => (
+                  <Chip
+                    key={cat}
+                    label={CATEGORY_LABEL[cat]}
+                    icon={CATEGORY_ICON[cat]}
+                    selected={selected.category === cat}
+                    onPress={() => {
+                      recategorize(selected.id, cat);
+                      setSelected(null);
+                    }}
+                  />
+                ))}
+              </Row>
+            ) : null}
           </>
         ) : null}
       </Sheet>
@@ -432,9 +460,10 @@ function AddTransactionSheet({ visible, onClose }: { visible: boolean; onClose: 
   );
 }
 
-function Documents() {
-  const docs = useStore((s) => s.documents);
+function Documents({ data, scenario }: { data: FinanceScenarioData; scenario: FinanceScenario }) {
+  const docs = data.documents;
   const remove = useStore((s) => s.removeDocument);
+  const canEdit = scenario === 'demo';
   const [confirm, setConfirm] = useState<string | null>(null);
   return (
     <View style={{ gap: 12 }}>
@@ -459,9 +488,9 @@ function Documents() {
                 iconTone={d.status === 'failed' ? 'amber' : 'green'}
                 title={d.name}
                 subtitle={`${shortDate(d.addedAt.slice(0, 10))} · ${d.summary}`}
-                right={<IconButton icon="trash-outline" label={`Delete ${d.name}`} onPress={() => setConfirm(d.id)} />}
+                right={canEdit ? <IconButton icon="trash-outline" label={`Delete ${d.name}`} onPress={() => setConfirm(d.id)} /> : null}
               />
-              {d.status === 'failed' ? (
+              {canEdit && d.status === 'failed' ? (
                 <Button label="Try again" small variant="tonal" tone="amber" style={{ alignSelf: 'flex-start', marginBottom: 8 }} onPress={() => router.push('/upload')} />
               ) : null}
               {i < docs.length - 1 ? <Divider style={{ marginVertical: 0 }} /> : null}

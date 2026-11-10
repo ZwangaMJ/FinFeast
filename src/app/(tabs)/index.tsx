@@ -43,18 +43,18 @@ export default function Home() {
   return (
     <Screen>
       <Row style={{ justifyContent: 'space-between', marginBottom: 12 }}>
-        <View>
+        <View style={{ flex: 1, minWidth: 0 }}>
           <Txt v="small" muted>
             {DAY_LONG[weekday(t)]}
           </Txt>
-          <Txt v="title">
+          <Txt v="title" numberOfLines={3} style={{ flexShrink: 1 }}>
             {greeting()}
             {name ? `, ${name}` : ''}
           </Txt>
         </View>
-        <Pressable onPress={() => router.navigate('/profile')} accessibilityRole="button" accessibilityLabel="Profile" style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: tone('green').bg, alignItems: 'center', justifyContent: 'center' }}>
+        <Pressable onPress={() => router.navigate('/profile')} accessibilityRole="button" accessibilityLabel="Profile" style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 22, backgroundColor: tone('green').bg, alignItems: 'center', justifyContent: 'center' }}>
           <Txt v="h3" color={tone('green').fg}>
-            {(name || 'F').slice(0, 1).toUpperCase()}
+            {Array.from((name || 'F').trim().normalize('NFC'))[0]?.toLocaleUpperCase() ?? 'F'}
           </Txt>
         </Pressable>
       </Row>

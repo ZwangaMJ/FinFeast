@@ -178,7 +178,7 @@ export function Button({
         style,
       ]}>
       {icon ? <Icon name={icon} size={small ? 16 : 19} color={col.fg} /> : null}
-      <Txt v={small ? 'smallStrong' : 'bodyStrong'} color={col.fg} numberOfLines={1}>
+      <Txt v={small ? 'smallStrong' : 'bodyStrong'} color={col.fg} style={{ flexShrink: 1, minWidth: 0, textAlign: 'center' }} numberOfLines={2}>
         {label}
       </Txt>
     </Pressable>
@@ -369,14 +369,14 @@ export function ListRow({
 }) {
   const { c, tone } = useTheme();
   const content = (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 52, paddingVertical: 8 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 12, minHeight: 52, paddingVertical: 8 }}>
       {icon ? (
-        <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: tone(iconTone).bg, alignItems: 'center', justifyContent: 'center' }}>
+        <View style={{ width: 38, height: 38, flexShrink: 0, marginTop: 2, borderRadius: 12, backgroundColor: tone(iconTone).bg, alignItems: 'center', justifyContent: 'center' }}>
           <Icon name={icon} size={19} color={tone(iconTone).fg} />
         </View>
       ) : null}
-      <View style={{ flex: 1 }}>
-        <Txt v="bodyStrong" numberOfLines={1}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Txt v="bodyStrong" numberOfLines={2} style={{ flexShrink: 1 }}>
           {title}
         </Txt>
         {subtitle ? (
@@ -385,7 +385,7 @@ export function ListRow({
           </Txt>
         ) : null}
       </View>
-      {right}
+      {right ? <View style={{ maxWidth: '48%', minWidth: 0, flexShrink: 0, alignItems: 'flex-end' }}>{right}</View> : null}
       {chevron ? <Icon name="chevron-forward" size={18} color={c.textFaint} /> : null}
     </View>
   );
@@ -437,14 +437,20 @@ export function AmountInput({ value, onChange, label, autoFocus, suffix }: { val
         </Txt>
         <TextInput
           value={value}
-          onChangeText={(t) => onChange(t.replace(/[^0-9.]/g, ''))}
+          onChangeText={(text) => {
+            const cleaned = text.replace(/,/g, '.').replace(/[^\d.]/g, '');
+            const decimal = cleaned.indexOf('.');
+            onChange(decimal < 0
+              ? cleaned
+              : `${cleaned.slice(0, decimal + 1)}${cleaned.slice(decimal + 1).replace(/\./g, '').slice(0, 2)}`);
+          }}
           keyboardType="decimal-pad"
           inputMode="decimal"
           autoFocus={autoFocus}
           accessibilityLabel={label ?? 'Amount'}
           placeholder="0"
           placeholderTextColor={c.textFaint}
-          style={{ flex: 1, fontFamily: fonts.display, fontSize: 26, color: c.text, paddingHorizontal: 8, paddingVertical: 10, outlineStyle: 'none' } as unknown as TextStyle}
+          style={{ flex: 1, fontFamily: fonts.display, fontSize: 26, color: c.text, paddingHorizontal: 8, paddingVertical: 10 }}
         />
         {suffix ? <Txt muted>{suffix}</Txt> : null}
       </View>

@@ -435,6 +435,33 @@ function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: Extrac
         </Card>
       ) : null}
 
+      {result.bankStatement ? (
+        <Card style={{ gap: 8 }}>
+          <Txt v="smallStrong" muted>
+            {result.bankStatement.bank === 'FNB' ? 'FNB' : 'Bank'} statement
+            {result.bankStatement.accountType ? ` · ${result.bankStatement.accountType}` : ''}
+          </Txt>
+          <Txt v="small">
+            {result.bankStatement.period.start ?? 'Start unavailable'} to {result.bankStatement.period.end ?? 'End unavailable'}
+            {' · '}{result.bankStatement.transactions.length} transactions
+          </Txt>
+          <Txt v="small" muted>
+            Debt payments {result.bankStatement.analysis.debtBurdenPercent === null ? '—' : `${result.bankStatement.analysis.debtBurdenPercent}%`}
+            {' · '}bank fees {result.bankStatement.analysis.feeBurdenPercent === null ? '—' : `${result.bankStatement.analysis.feeBurdenPercent}%`} of recognized income
+          </Txt>
+          {result.bankStatement.analysis.balanceReconciliation === 'mismatch' ? (
+            <Txt v="caption" color={c.amber}>Opening, transaction, and closing balances do not reconcile. Review extracted transactions before saving.</Txt>
+          ) : result.bankStatement.analysis.balanceReconciliation === 'unavailable' ? (
+            <Txt v="caption" muted>Some balance fields were not present, so full statement reconciliation was unavailable.</Txt>
+          ) : null}
+          {result.bankStatement.analysis.anomalies.length ? (
+            <Txt v="caption" color={c.amber}>
+              {result.bankStatement.analysis.anomalies.length} possible duplicate, unusual, failed, or balance-anomaly items need review.
+            </Txt>
+          ) : null}
+        </Card>
+      ) : null}
+
       {bills.length ? (
         <ReviewFieldCard label={`Fixed bills detected (${bills.length - rejected.length})`} value={fmt(billTotal)} confidence={bills.some((b) => b.confidence !== 'high') ? 'medium' : 'high'}>
           <Pressable onPress={() => setBillsOpen((o) => !o)} accessibilityRole="button" style={{ minHeight: 32, justifyContent: 'center' }}>

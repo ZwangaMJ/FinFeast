@@ -72,15 +72,10 @@ export default function RootLayout() {
                 <Txt v="small" color={c.destructive}>{authError}</Txt>
               </View>
             ) : null}
-            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.background }, animation: 'fade_from_bottom', animationDuration: 250 }}>
+            <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: c.background }, animation: 'none' }}>
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="onboarding" options={{ gestureEnabled: false, animation: 'fade' }} />
               <Stack.Screen name="upload" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
-              <Stack.Screen name="insights" options={{ animation: 'slide_from_right' }} />
-              <Stack.Screen name="grocery" options={{ animation: 'slide_from_right' }} />
-              <Stack.Screen name="pantry" options={{ animation: 'slide_from_right' }} />
-              <Stack.Screen name="meal/[id]" options={{ animation: 'slide_from_right' }} />
-              <Stack.Screen name="goal/[id]" options={{ animation: 'slide_from_right' }} />
               <Stack.Screen name="goal/new" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
             </Stack>
           </View>

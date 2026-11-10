@@ -11,7 +11,7 @@ npx expo start          # press i / a for simulators, or scan with Expo Go
 npx expo start --web    # browser
 ```
 
-Checks: `npx tsc --noEmit`, `npx expo lint`, and `npm run test:payslip` (Node.js 22+).
+Checks: `npx tsc --noEmit`, `npx expo lint`, `npm run test:payslip`, and `npm run test:bank-statement` (Node.js 22+).
 
 ## Accounts and data
 
@@ -34,12 +34,13 @@ Engines (pure TypeScript, no UI):
 - `src/lib/mealPlanner.ts` — constraint solver: hard filters → budget ceiling → calories ±10% & protein floor → variety → batch cooking; pack-rounded, consolidated grocery list with pantry credits; honest `budget_floor_conflict`.
 - `src/lib/budget.ts` — income − bills − committed goals = flexible money; month forecast; risky days; Security Meter.
 - `src/lib/payslip.ts` — South African payslip DTO extraction, currency normalization, validation warnings, and disposable-income analysis.
+- `src/lib/bankStatement.ts` — local, multi-page South African bank statement parsing, transaction categorization, balance reconciliation, recurring-payment analysis, and cash-flow insights.
 - `src/lib/insights.ts` — ranked, data-anchored insights ((money × actionability) ÷ effort), never shaming.
 - `src/store/useStore.ts` — app state, locally persisted on the device, Found Money routing rules, weekly rollover (underspend → Found Money, overspend → budget-light week), payday and month-end rules.
 
 ## Not real yet
 
-- **Payslip PDFs are parsed locally** with PDF.js on web and native PDFKit/PDFBox extraction on iOS/Android; personal details and financial figures are not uploaded. Web loads the matching PDF.js worker from cdnjs, so web extraction needs an internet connection. Mobile PDF extraction requires an app development build and is unavailable in Expo Go. Scanned payslip photos do not have OCR yet, and other document types still use prototype sample data.
+- **Payslip and bank statement PDFs are parsed locally** with PDF.js on web and native PDFKit/PDFBox extraction on iOS/Android. Parsing does not upload the PDF or full account number; normalized transactions follow the app's data persistence settings. Bank statement results include typed transactions, account/period metadata, Dr/Cr balances, debit-order and fee categorization, reconciliation checks, and budget analysis. Unposted debit-order attempts remain visible as anomalies but are excluded from cash-flow totals. Web loads the matching PDF.js worker from cdnjs, so web extraction needs an internet connection. Mobile PDF extraction requires an app development build and is unavailable in Expo Go. Scanned documents do not have OCR yet, and receipts and tax forms still use prototype sample data.
 - **Notifications** are stored as preferences; no push service is wired up.
 - Meal "photos" are emoji tiles; recipe prices are a fixed South African price list scaled for other currencies.
 - P2 items (bank feeds, household sharing, investment partners) are shown as "coming soon".

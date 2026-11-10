@@ -1,34 +1,10 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { AccessibilityInfo, Animated, Easing, View } from 'react-native';
+import { type ReactNode } from 'react';
+import { View } from 'react-native';
 import Svg, { Circle, G, Line, Path, Rect, Text as SvgText } from 'react-native-svg';
 
 import { Txt } from '@/components/ui';
 import { DAY_SHORT } from '@/lib/dates';
 import { fonts, useTheme, type Tone } from '@/theme';
-
-function useReducedMotion() {
-  const [reduced, setReduced] = useState(false);
-  useEffect(() => {
-    AccessibilityInfo.isReduceMotionEnabled().then(setReduced).catch(() => {});
-    const sub = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduced);
-    return () => sub.remove();
-  }, []);
-  return reduced;
-}
-
-/** Animated 0→value with 250ms ease-out; instant when reduced motion is on. */
-function useAnimatedNumber(value: number) {
-  const reduced = useReducedMotion();
-  const [anim] = useState(() => new Animated.Value(0));
-  const [v, setV] = useState(0);
-  useEffect(() => {
-    if (reduced) return;
-    const id = anim.addListener(({ value: x }) => setV(x));
-    Animated.timing(anim, { toValue: value, duration: 280, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
-    return () => anim.removeListener(id);
-  }, [value, reduced, anim]);
-  return reduced ? value : v;
-}
 
 export function Ring({
   value,
@@ -48,12 +24,12 @@ export function Ring({
   accessibilityLabel: string;
 }) {
   const { c, tone: t } = useTheme();
-  const shown = useAnimatedNumber(Math.max(0, value));
+  const safeValue = Number.isFinite(value) ? Math.max(0, value) : 0;
   const r = (size - stroke) / 2;
   const circ = 2 * Math.PI * r;
-  const over = value > 1;
+  const over = safeValue > 1;
   const color = over ? t(overTone).fg : t(tone).fg;
-  const frac = Math.min(1, shown);
+  const frac = Math.min(1, safeValue);
   return (
     <View style={{ width: size, height: size }} accessible accessibilityRole="image" accessibilityLabel={accessibilityLabel}>
       <Svg width={size} height={size}>
@@ -85,13 +61,25 @@ export function SpendBars({ weeks, currencyFmt }: { weeks: { label: string; actu
   const { c } = useTheme();
   const W = 320;
   const H = 150;
-  const max = Math.max(1, ...weeks.flatMap((w) => [w.actual, w.plan])) * 1.1;
-  const bw = W / weeks.length;
+  const safeWeeks = weeks.map((week) => ({
+    ...week,
+    actual: Number.isFinite(week.actual) ? Math.max(0, week.actual) : 0,
+    plan: Number.isFinite(week.plan) ? Math.max(0, week.plan) : 0,
+  }));
+  const max = Math.max(1, ...safeWeeks.flatMap((w) => [w.actual, w.plan])) * 1.1;
+  const bw = W / Math.max(1, safeWeeks.length);
   const y = (v: number) => H - 22 - (v / max) * (H - 34);
+  if (!safeWeeks.length) {
+    return (
+      <View accessible accessibilityRole="image" accessibilityLabel="No weekly spending data yet" style={{ height: H, justifyContent: 'center' }}>
+        <Txt v="small" muted>No weekly spending data yet.</Txt>
+      </View>
+    );
+  }
   return (
-    <View accessible accessibilityRole="image" accessibilityLabel={weeks.map((w) => `${w.label}: spent ${currencyFmt(w.actual)}${w.plan ? ` of ${currencyFmt(w.plan)} planned` : ''}`).join('. ')}>
+    <View accessible accessibilityRole="image" accessibilityLabel={safeWeeks.map((w) => `${w.label}: spent ${currencyFmt(w.actual)}${w.plan ? ` of ${currencyFmt(w.plan)} planned` : ''}`).join('. ')}>
       <Svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`}>
-        {weeks.map((w, i) => {
+        {safeWeeks.map((w, i) => {
           const x = i * bw + bw * 0.22;
           const width = bw * 0.56;
           const over = w.plan > 0 && w.actual > w.plan;
@@ -116,10 +104,19 @@ export function SpendBars({ weeks, currencyFmt }: { weeks: { label: string; actu
 export function HeatStrip({ days, currencyFmt }: { days: { day: number; avg: number; intensity: number; risky: boolean }[]; currencyFmt: (n: number) => string }) {
   const { c, tone } = useTheme();
   const order = [1, 2, 3, 4, 5, 6, 0];
+  const byDay = new Map(days.map((day) => [day.day, {
+    avg: Number.isFinite(day.avg) ? Math.max(0, day.avg) : 0,
+    intensity: Number.isFinite(day.intensity) ? Math.max(0, Math.min(1, day.intensity)) : 0,
+    risky: day.risky,
+  }]));
+  const safeDay = (day: number) => byDay.get(day) ?? { avg: 0, intensity: 0, risky: false };
   return (
-    <View style={{ flexDirection: 'row', gap: 6 }} accessible accessibilityLabel={order.map((d) => `${DAY_SHORT[d]} ${currencyFmt(days[d].avg)}${days[d].risky ? ', high-risk day' : ''}`).join(', ')}>
+    <View style={{ flexDirection: 'row', gap: 6 }} accessible accessibilityLabel={order.map((d) => {
+      const item = safeDay(d);
+      return `${DAY_SHORT[d]} ${currencyFmt(item.avg)}${item.risky ? ', high-risk day' : ''}`;
+    }).join(', ')}>
       {order.map((d) => {
-        const day = days[d];
+        const day = safeDay(d);
         const bg = day.risky ? c.amberStrong : day.intensity > 0.05 ? c.primary : c.grayWash;
         const opacity = day.risky ? 1 : 0.18 + day.intensity * 0.6;
         return (
@@ -143,26 +140,41 @@ export function ForecastChart({ points, bills, band }: { points: { day: number; 
   const { c } = useTheme();
   const W = 320;
   const H = 120;
-  const vals = points.map((p) => p.balance);
-  const max = Math.max(...vals, 0) + band;
-  const min = Math.min(...vals, 0) - band;
-  const x = (d: number) => ((d - 1) / Math.max(1, points.length - 1)) * (W - 8) + 4;
-  const y = (v: number) => 8 + (1 - (v - min) / Math.max(1, max - min)) * (H - 24);
-  const actual = points.filter((p) => p.actual);
-  const proj = points.filter((p, i) => !p.actual || (points[i + 1] && !points[i + 1].actual));
-  const path = (pts: typeof points) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.day).toFixed(1)},${y(p.balance).toFixed(1)}`).join(' ');
-  const last = points[points.length - 1];
+  const safePoints = points.filter((point) => Number.isFinite(point.day) && Number.isFinite(point.balance));
+  if (!safePoints.length) {
+    return (
+      <View accessible accessibilityRole="image" accessibilityLabel="No cash-flow forecast data yet" style={{ height: H, justifyContent: 'center' }}>
+        <Txt v="small" muted>No forecast data yet.</Txt>
+      </View>
+    );
+  }
+  const safeBand = Number.isFinite(band) ? Math.abs(band) : 0;
+  const vals = safePoints.map((p) => p.balance);
+  let max = Math.max(...vals, 0) + safeBand;
+  let min = Math.min(...vals, 0) - safeBand;
+  if (max - min < 1) {
+    max += 0.5;
+    min -= 0.5;
+  }
+  const lastDay = Math.max(1, ...safePoints.map((point) => point.day));
+  const x = (d: number) => ((Math.max(1, Math.min(lastDay, d)) - 1) / Math.max(1, lastDay - 1)) * (W - 8) + 4;
+  const y = (v: number) => 8 + (1 - (v - min) / (max - min)) * (H - 24);
+  const actual = safePoints.filter((p) => p.actual);
+  const proj = safePoints.filter((p, i) => !p.actual || Boolean(safePoints[i + 1] && !safePoints[i + 1].actual));
+  const path = (pts: typeof safePoints) => pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.day).toFixed(1)},${y(p.balance).toFixed(1)}`).join(' ');
+  const last = safePoints[safePoints.length - 1];
   const bandPath = proj.length
-    ? `${proj.map((p, i) => `${i ? 'L' : 'M'}${x(p.day)},${y(p.balance + (band * (p.day - proj[0].day)) / Math.max(1, last.day - proj[0].day))}`).join(' ')} ${[...proj]
+    ? `${proj.map((p, i) => `${i ? 'L' : 'M'}${x(p.day)},${y(p.balance + (safeBand * (p.day - proj[0].day)) / Math.max(1, last.day - proj[0].day))}`).join(' ')} ${[...proj]
         .reverse()
-        .map((p) => `L${x(p.day)},${y(p.balance - (band * (p.day - proj[0].day)) / Math.max(1, last.day - proj[0].day))}`)
+        .map((p) => `L${x(p.day)},${y(p.balance - (safeBand * (p.day - proj[0].day)) / Math.max(1, last.day - proj[0].day))}`)
         .join(' ')} Z`
     : '';
+  const safeBills = bills.filter((bill) => Number.isFinite(bill.day));
   return (
     <Svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`}>
       <Line x1={0} x2={W} y1={y(0)} y2={y(0)} stroke={c.border} strokeWidth={1} />
       {bandPath ? <Path d={bandPath} fill={c.primary} opacity={0.12} /> : null}
-      {bills.map((b, i) => (
+      {safeBills.map((b, i) => (
         <Line key={i} x1={x(b.day)} x2={x(b.day)} y1={H - 14} y2={H - 6} stroke={c.amber} strokeWidth={2} strokeLinecap="round" />
       ))}
       <Path d={path(actual)} stroke={c.primary} strokeWidth={2.5} fill="none" strokeLinecap="round" strokeLinejoin="round" />

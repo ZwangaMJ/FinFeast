@@ -31,7 +31,6 @@ export default function TabLayout() {
       tabBarLabelStyle: { fontFamily: fonts.medium, fontSize: 11, marginBottom: 4 },
       tabBarBadgeStyle: { fontFamily: fonts.bold, fontSize: 10 },
       sceneStyle: { backgroundColor: c.background },
-      lazy: false,
     }),
     [c],
   );
