@@ -11,7 +11,32 @@ npx expo start          # press i / a for simulators, or scan with Expo Go
 npx expo start --web    # browser
 ```
 
-Checks: `npx tsc --noEmit`, `npx expo lint`, `npm run test:payslip`, and `npm run test:bank-statement` (Node.js 22+).
+Checks (Node.js 22+): `npm run lint`, `npm run typecheck`, `npm run test:unit` (payslip and bank-statement parser tests).
+
+Web smoke tests (Playwright, against the exported build):
+
+```bash
+npm run export:web      # expo export -p web → dist/, plus 404.html and .nojekyll for GitHub Pages
+npx playwright install chromium
+npm run test:e2e        # serves dist/ at http://localhost:3000/FinFeast/ and runs tests/*.spec.ts
+```
+
+## Deployment
+
+The web build is published to GitHub Pages at **https://zwangamj.github.io/FinFeast/**. `experiments.baseUrl` in `app.json` is `/FinFeast` so assets resolve under that path.
+
+| Workflow | Runs on | What it does |
+|---|---|---|
+| `.github/workflows/ci.yml` | Pull requests to `main` (and when called by deploy) | `checks`: lint, typecheck, parser tests. `e2e`: export the web build, run Playwright smoke tests, upload the report and the tested `dist/` as `web-dist`. |
+| `.github/workflows/deploy-web.yml` | Push to `main`, or the Run workflow button | Runs `ci.yml`, then deploys the `web-dist` artifact (exactly what was tested) to GitHub Pages. |
+
+No secrets are needed: Pages deploys with the workflow's built-in token, and no Supabase variables are baked into the web build while cloud sync is disabled.
+
+One-time GitHub setup:
+
+1. **Settings → General → Danger Zone → Change visibility → Public** (free GitHub Pages needs a public repo).
+2. **Settings → Pages → Build and deployment → Source: GitHub Actions.** Do this before the first merge, or the deploy job fails.
+3. After `ci.yml` has run once on a PR: **Settings → Rules → Rulesets → New branch ruleset** targeting `main`, enable **Require status checks to pass**, and add `checks` and `e2e`.
 
 ## Accounts and data
 

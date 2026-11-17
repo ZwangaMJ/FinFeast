@@ -51,13 +51,17 @@
   },
   "scripts": {
     "start": "expo start",
-    "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
     "test:payslip": "node --experimental-strip-types --test tests/payslip.test.mjs",
-    "test:bank-statement": "node --experimental-strip-types --test tests/bankStatement.test.mjs"
+    "test:bank-statement": "node --experimental-strip-types --test tests/bankStatement.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "npm run test:payslip && npm run test:bank-statement",
+    "export:web": "expo export -p web && node scripts/postexport-web.mjs",
+    "serve:web": "node scripts/serve-web.mjs",
+    "test:e2e": "playwright test"
   },
   "private": true
 }

@@ -1,0 +1,69 @@
+name: CI
+
+# Pull requests run the checks. deploy-web.yml also calls this workflow on
+# pushes to main, so a deploy only happens after the same checks pass.
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Parser unit tests
+        run: npm run test:unit
+
+  e2e:
+    name: e2e
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Export web build
+        run: npm run export:web
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Playwright smoke tests
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+      # The exact build that passed the tests; deploy-web.yml publishes it.
+      - name: Upload web build
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: dist/
+          include-hidden-files: true
+          retention-days: 7

@@ -1,0 +1,45 @@
+name: Deploy web
+
+# Every push to main runs CI, then publishes the tested web build
+# to GitHub Pages: https://zwangamj.github.io/FinFeast/
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; never cancel a deploy that is already running.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: deploy
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download tested web build
+        uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: dist
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
