@@ -2,9 +2,11 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Platform, Share, View } from 'react-native';
 
+import { AccountSettings } from '@/components/AccountSettings';
 import { AmountInput, Button, Card, Chip, Divider, Icon, ListRow, Pill, Row, Screen, Section, Segmented, Sheet, Stepper, ToggleRow, Txt, useCurrency } from '@/components/ui';
 import { CURRENCY_LABELS, money } from '@/lib/format';
 import type { Allergen, Currency, DietPattern, ThemeMode } from '@/store/types';
+import { useAuthStore } from '@/store/useAuthStore';
 import { exportData, useStore } from '@/store/useStore';
 import { useTheme } from '@/theme';
 
@@ -40,9 +42,8 @@ export default function Profile() {
   const p = s.profile;
   const [edit, setEdit] = useState<null | 'income' | 'food'>(null);
   const [draft, setDraft] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [exported, setExported] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const email = useAuthStore((state) => state.email);
   const toggleAllergy = (a: Allergen) => s.setProfile({ allergies: p.allergies.includes(a) ? p.allergies.filter((x) => x !== a) : [...p.allergies, a] });
 
   return (
@@ -57,7 +58,7 @@ export default function Profile() {
           <View style={{ flex: 1 }}>
             <Txt v="h2">{p.name || 'Your profile'}</Txt>
             <Txt v="small" muted>
-              Saved on this device
+              {email}
             </Txt>
           </View>
           {s.manualMode ? <Pill label="Manual mode" tone="amber" /> : <Pill label="Document mode" tone="green" />}
@@ -175,9 +176,9 @@ export default function Profile() {
       <Section title="Security & your data">
         <Card tone="green" style={{ gap: 10 }}>
           {[
-            ['phone-portrait-outline', 'Your data is stored on this device for now; account sign-in and cloud sync are coming soon.'],
-            ['eye-off-outline', 'Supported payslip and bank statement PDFs are read on this device. Receipt and tax-form extraction are not available yet.'],
-            ['time-outline', 'Your financial records stay on this device.'],
+            ['lock-closed-outline', 'Your data is saved to your FinFeast account. Only you can read it once you sign in.'],
+            ['eye-off-outline', 'Payslip and bank statement PDFs are read on this device; only the extracted figures are saved to your account. Receipt and tax-form extraction are not available yet.'],
+            ['phone-portrait-outline', 'A copy is kept on this device while you’re signed in, and removed when you sign out.'],
             ['ban-outline', 'Never sold. No third-party ad tracking.'],
           ].map(([icon, text]) => (
             <Row key={text} gap={10} style={{ alignItems: 'flex-start' }}>
@@ -198,12 +199,15 @@ export default function Profile() {
               setExported(true);
             }}
           />
-          <Button label="Delete all my data" icon="trash-outline" variant="destructive" disabled={deleting} onPress={() => setConfirmDelete(true)} />
         </View>
       </Section>
 
+      <Section title="Account">
+        <AccountSettings />
+      </Section>
+
       <Txt v="caption" muted center style={{ marginTop: 26 }}>
-        FinFeast prototype · data stays on this device. FinFeast is not a licensed financial adviser.
+        FinFeast prototype · data is saved to your account. FinFeast is not a licensed financial adviser.
       </Txt>
 
       <Sheet
@@ -232,29 +236,6 @@ export default function Profile() {
         ) : null}
       </Sheet>
 
-      <Sheet
-        visible={confirmDelete}
-        onClose={() => setConfirmDelete(false)}
-        title="Delete everything?"
-        footer={
-          <>
-            <Button
-              label="Permanently delete my data"
-              variant="destructive"
-              disabled={deleting}
-              onPress={async () => {
-                setConfirmDelete(false);
-                setDeleting(true);
-                s.resetAll();
-                setDeleting(false);
-                router.replace('/onboarding');
-              }}
-            />
-            <Button label="Cancel" variant="ghost" tone="gray" onPress={() => setConfirmDelete(false)} />
-          </>
-        }>
-        <Txt muted>This permanently deletes your documents, transactions, plans, goals and settings from this device. Export first if you’d like a copy.</Txt>
-      </Sheet>
     </Screen>
   );
 }

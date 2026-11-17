@@ -47,7 +47,8 @@
           "cameraPermission": "FinFeast uses the camera only while you scan a receipt or payslip.",
           "photosPermission": false
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": false,

@@ -113,7 +113,7 @@ function Welcome({ onStart, onDoc }: { onStart: () => void; onDoc: () => void })
           </Row>
         ))}
       </View>
-      <TrustStrip text="Your data stays on this device for now. Delete everything anytime." />
+      <TrustStrip text="Your data is private to your account. Delete it anytime." />
       <Button label="Start free" onPress={onStart} style={{ marginTop: 6 }} />
       <Button label="I have a document ready" variant="secondary" icon="document-attach-outline" onPress={onDoc} />
     </View>
@@ -131,7 +131,7 @@ function Account({ onDone }: { onDone: () => void }) {
   return (
     <View style={{ gap: 14 }}>
       <Txt v="title">Set up your profile</Txt>
-      <Txt muted>No sign-in needed. Your data stays on this device while account sync is being set up.</Txt>
+      <Txt muted>You’re signed in. Choose a name to personalise your plans.</Txt>
       <Field label="What should we call you?" value={name} onChange={setName} placeholder="First name" />
       <Button label="Continue" onPress={finish} />
     </View>

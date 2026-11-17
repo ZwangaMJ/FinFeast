@@ -458,7 +458,29 @@ export function AmountInput({ value, onChange, label, autoFocus, suffix }: { val
   );
 }
 
-export function Field({ value, onChange, label, placeholder, keyboardType, autoFocus, secure }: { value: string; onChange: (s: string) => void; label?: string; placeholder?: string; keyboardType?: 'email-address' | 'number-pad' | 'default'; autoFocus?: boolean; secure?: boolean }) {
+export function Field({
+  value,
+  onChange,
+  label,
+  placeholder,
+  keyboardType,
+  autoFocus,
+  secure,
+  autoComplete,
+  textContentType,
+  onSubmit,
+}: {
+  value: string;
+  onChange: (s: string) => void;
+  label?: string;
+  placeholder?: string;
+  keyboardType?: 'email-address' | 'number-pad' | 'default';
+  autoFocus?: boolean;
+  secure?: boolean;
+  autoComplete?: 'email' | 'current-password' | 'new-password' | 'one-time-code' | 'off';
+  textContentType?: 'emailAddress' | 'password' | 'newPassword' | 'oneTimeCode';
+  onSubmit?: () => void;
+}) {
   const { c } = useTheme();
   return (
     <View style={{ gap: 6 }}>
@@ -476,6 +498,9 @@ export function Field({ value, onChange, label, placeholder, keyboardType, autoF
         autoCapitalize="none"
         autoFocus={autoFocus}
         secureTextEntry={secure}
+        autoComplete={autoComplete}
+        textContentType={textContentType}
+        onSubmitEditing={onSubmit}
         accessibilityLabel={label ?? placeholder}
         style={{ backgroundColor: c.surfaceAlt, borderRadius: radius.md, paddingHorizontal: 16, minHeight: 52, fontFamily: fonts.regular, fontSize: 16, color: c.text }}
       />

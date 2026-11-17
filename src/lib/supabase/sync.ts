@@ -36,7 +36,7 @@ export function startCloudSync(userId: string): () => void {
 
         useDataSyncStatus.setState({ status: 'saving', error: null });
         try {
-          await supabaseDataRepository.save(snapshot);
+          await supabaseDataRepository.save(snapshot, userId);
           lastSaved = serialized;
           useDataSyncStatus.setState({ status: 'saved', error: null });
         } catch (error) {
@@ -80,6 +80,7 @@ export function startCloudSync(userId: string): () => void {
 
 export function stopCloudSync(): void {
   activeStop?.();
+  useDataSyncStatus.setState({ status: 'saved', error: null });
 }
 
 export async function flushCloudSync(): Promise<boolean> {
@@ -93,4 +94,8 @@ export async function retryCloudSync(): Promise<void> {
 
 export function useCloudSyncStatus(): SyncState {
   return useDataSyncStatus();
+}
+
+export function getCloudSyncStatus(): SyncState {
+  return useDataSyncStatus.getState();
 }
