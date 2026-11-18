@@ -46,7 +46,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The Supabase URL and publishable key are public by design (they ship in
+      # the app bundle) and protected by row-level security, so they are
+      # repository variables, not secrets.
+      - name: Check Supabase settings
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$EXPO_PUBLIC_SUPABASE_URL" ] || [ -z "$EXPO_PUBLIC_SUPABASE_ANON_KEY" ]; then
+            echo "::error::Set the repository variables EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY (Settings → Secrets and variables → Actions → Variables)."
+            exit 1
+          fi
       - name: Export web build
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ vars.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
         run: npm run export:web
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium

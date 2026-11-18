@@ -30,7 +30,7 @@ The web build is published to GitHub Pages at **https://zwangamj.github.io/FinFe
 | `.github/workflows/ci.yml` | Pull requests to `main` (and when called by deploy) | `checks`: lint, typecheck, parser tests. `e2e`: export the web build, run Playwright smoke tests, upload the report and the tested `dist/` as `web-dist`. |
 | `.github/workflows/deploy-web.yml` | Push to `main`, or the Run workflow button | Runs `ci.yml`, then deploys the `web-dist` artifact (exactly what was tested) to GitHub Pages. |
 
-No secrets are needed: Pages deploys with the workflow's built-in token, and no Supabase variables are baked into the web build while cloud sync is disabled.
+No secrets are needed: Pages deploys with the workflow's built-in token. The web build does need two **repository variables**, `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` (the publishable key). Both are public by design, since they ship in the app. CI fails early with a clear message if either is missing.
 
 One-time GitHub setup:
 
@@ -40,7 +40,12 @@ One-time GitHub setup:
 
 ## Accounts and data
 
-Email sign-in and Supabase cloud sync are temporarily disabled while account setup is being completed. No account is needed to use the app; app data is saved locally on the device.
+FinFeast requires an account. People sign in with email and password; confirming an email and resetting a password both use a 6-digit code emailed through Supabase (custom SMTP via Brevo). Each account's data is stored in Supabase behind row-level security and syncs automatically. Profile has change password, sign out and delete account.
+
+- Setup steps (migrations, email templates, build variables): [docs/supabase-auth-setup.md](docs/supabase-auth-setup.md)
+- Auth flow: `src/lib/auth/authController.ts` (tested in `tests/authController.test.mjs`); wired up in `src/store/useAuthStore.ts`
+- Screens: `src/app/sign-in.tsx`, `src/components/AccountSettings.tsx`
+- Local development needs `.env` with `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` (see `.env.example`). iOS/Android need a development build (session storage uses `expo-secure-store`).
 
 ## What's in the prototype
 

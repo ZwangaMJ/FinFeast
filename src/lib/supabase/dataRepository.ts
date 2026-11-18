@@ -367,13 +367,22 @@ export const supabaseDataRepository = {
     };
   },
 
-  async save(data: AppData): Promise<void> {
-    const { error } = await getSupabaseClient().rpc('replace_user_data', { p_data: data });
+  // replace_user_data writes for auth.uid(), so refuse to save if the signed-in
+  // account changed after this data was loaded (e.g. a sign-out in another tab).
+  async save(data: AppData, userId: string): Promise<void> {
+    const client = getSupabaseClient();
+    const { data: sessionData, error: sessionError } = await client.auth.getSession();
+    assertNoError(sessionError, 'verify the signed-in account');
+    if (sessionData.session?.user.id !== userId) {
+      throw new Error('Your account changed before your data could be saved. Please sign in again.');
+    }
+    const { error } = await client.rpc('replace_user_data', { p_data: data });
     assertNoError(error, 'save user data');
   },
 
-  async delete(userId: string): Promise<void> {
-    const { error } = await getSupabaseClient().from('user_profiles').delete().eq('user_id', userId);
-    assertNoError(error, 'delete user data');
+  // Deletes the signed-in user from auth.users; every data row cascades with it.
+  async deleteAccount(): Promise<void> {
+    const { error } = await getSupabaseClient().rpc('delete_my_account');
+    assertNoError(error, 'delete your account');
   },
 };

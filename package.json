@@ -22,6 +22,7 @@
     "expo-linking": "~58.0.14",
     "expo-pdf-text-extract": "^1.1.0",
     "expo-router": "~58.0.26",
+    "expo-secure-store": "~58.0.3",
     "expo-splash-screen": "~58.0.11",
     "expo-status-bar": "~58.0.4",
     "expo-symbols": "~58.0.4",
@@ -57,8 +58,9 @@
     "lint": "expo lint",
     "test:payslip": "node --experimental-strip-types --test tests/payslip.test.mjs",
     "test:bank-statement": "node --experimental-strip-types --test tests/bankStatement.test.mjs",
+    "test:auth": "node --experimental-strip-types --test tests/authValidation.test.mjs tests/chunkedStorage.test.mjs tests/authController.test.mjs",
     "typecheck": "tsc --noEmit",
-    "test:unit": "npm run test:payslip && npm run test:bank-statement",
+    "test:unit": "npm run test:payslip && npm run test:bank-statement && npm run test:auth",
     "export:web": "expo export -p web && node scripts/postexport-web.mjs",
     "serve:web": "node scripts/serve-web.mjs",
     "test:e2e": "playwright test"
