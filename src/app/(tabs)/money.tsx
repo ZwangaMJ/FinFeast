@@ -2,13 +2,15 @@ import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { View } from 'react-native';
 
-import { ForecastChart, HeatStrip, SpendBars } from '@/components/charts';
+import { ForecastChart, HeatStrip, MonthRiskStrip, SpendBars } from '@/components/charts';
+import { ordinal, RecurringExpenseSheet, recurringSubtitle } from '@/components/RecurringExpenses';
 import { AmountInput, Button, Card, Chip, Divider, EmptyState, Field, Icon, IconButton, ListRow, Pill, ProgressBar, Row, Screen, Section, Segmented, Sheet, Txt, useCurrency } from '@/components/ui';
 import { useInsights } from '@/hooks/useInsights';
 import {
   CATEGORY_ICON,
   CATEGORY_LABEL,
   categoryAverages,
+  discretionaryTransactions,
   FOOD,
   forecastMonth,
   lastNWeeks,
@@ -17,10 +19,11 @@ import {
   spend,
   VARIABLE_CATEGORIES,
 } from '@/lib/budget';
-import { addDays, DAY_LONG, monthName, monthStart, shortDate, today } from '@/lib/dates';
+import { addDays, DAY_LONG, daysInMonth, monthName, monthStart, shortDate, today } from '@/lib/dates';
 import { money, PRICE_FACTOR } from '@/lib/format';
 import { planCost } from '@/lib/mealPlanner';
-import type { Category, Transaction } from '@/store/types';
+import { isSubscription, monthlyRecurringTotal, RECURRING_CATEGORY_ICON, RECURRING_CATEGORY_LABEL, recurringCategoryPlan } from '@/lib/recurring';
+import type { Category, RecurringExpense, Transaction } from '@/store/types';
 import { useStore, type AppData } from '@/store/useStore';
 import { useTheme } from '@/theme';
 
@@ -51,21 +54,27 @@ function Overview({ data: s }: { data: AppData }) {
   const currency = useCurrency();
   const fmt = (n: number) => money(n, currency);
   const insights = useInsights();
-  const f = useMemo(() => forecastMonth(s.income, s.bills, s.goals, s.transactions, s.weeklyFoodBudget), [s.income, s.bills, s.goals, s.transactions, s.weeklyFoodBudget]);
+  const f = useMemo(
+    () => forecastMonth(s.income, s.recurringExpenses, s.goals, s.transactions, s.weeklyFoodBudget),
+    [s.income, s.recurringExpenses, s.goals, s.transactions, s.weeklyFoodBudget],
+  );
+  const habits = useMemo(() => discretionaryTransactions(s.transactions, s.recurringExpenses), [s.transactions, s.recurringExpenses]);
   const weeks = lastNWeeks(6).map((ws) => {
     const rec = s.weekHistory.find((w) => w.weekStart === ws);
     const isCurrent = s.plan?.weekStart === ws;
     const plan = rec?.estimate ?? (isCurrent && s.plan ? planCost(s.plan.days, s.profile.householdSize, s.pantry.map((p) => p.key), currency) * planCoverage(s.plan) : 0);
     return { label: shortDate(ws), actual: spend(s.transactions, ws, addDays(ws, 7), FOOD), plan };
   });
-  const risky = riskyDays(s.transactions, 50 * PRICE_FACTOR[currency]);
+  const risky = riskyDays(habits, 50 * PRICE_FACTOR[currency]);
   const worst = [...risky].sort((a, b) => b.avg - a.avg)[0];
-  const avgs = categoryAverages(s.transactions);
+  const avgs = categoryAverages(habits);
   const ms = monthStart();
-  const subs = s.bills.filter((b) => b.isSubscription);
-  const fixed = s.bills.filter((b) => !b.isSubscription);
+  const dayOfMonth = Number(today().slice(8, 10));
+  const upcoming = f.debits.filter((d) => d.day >= dayOfMonth).slice(0, 4);
+  const firstRisky = f.riskDays.find((d) => d.risky);
+  const recurringPlan = recurringCategoryPlan({ expenses: s.recurringExpenses, transactions: s.transactions, monthStart: ms, daysInMonth: daysInMonth(), today: dayOfMonth });
 
-  if (!s.income && !s.bills.length && !s.transactions.length && s.weeklyFoodBudget <= 0) {
+  if (!s.income && !s.recurringExpenses.length && !s.transactions.length && s.weeklyFoodBudget <= 0) {
     return (
       <EmptyState
         icon="wallet-outline"
@@ -86,7 +95,7 @@ function Overview({ data: s }: { data: AppData }) {
           {fmt(Math.round(f.projectedEnd / 10) * 10)}
         </Txt>
         <Txt muted>
-          give or take {fmt(Math.round(f.band / 10) * 10)} · based on your bills and your own spending pattern
+          give or take {fmt(Math.round(f.band / 10) * 10)} · based on your scheduled debits and your own spending pattern
         </Txt>
         <ForecastChart points={f.points} bills={f.billMarkers} band={f.band} />
         <Row gap={14} wrap>
@@ -105,14 +114,32 @@ function Overview({ data: s }: { data: AppData }) {
           <Row gap={6}>
             <View style={{ width: 2, height: 10, backgroundColor: c.amber }} />
             <Txt v="caption" muted>
-              Bill day
+              Debit day
             </Txt>
           </Row>
         </Row>
+        {upcoming.length ? (
+          <View style={{ gap: 4, marginTop: 4 }}>
+            <Txt v="smallStrong" muted>
+              Scheduled debits still to come
+            </Txt>
+            {upcoming.map((d) => (
+              <Row key={`${d.id}-${d.day}`} gap={10}>
+                <Icon name={RECURRING_CATEGORY_ICON[d.category]} size={16} color={c.amber} />
+                <Txt v="small" style={{ flex: 1 }}>
+                  {d.name} · {d.day === dayOfMonth ? 'today' : `the ${ordinal(d.day)}`}
+                </Txt>
+                <Txt v="small" tabular>
+                  {fmt(d.amount)}
+                </Txt>
+              </Row>
+            ))}
+          </View>
+        ) : null}
         <Divider />
         {[
           { l: 'Income', v: f.income, icon: 'arrow-down-circle-outline', t: 'green' as const },
-          { l: 'Fixed bills', v: -f.bills, icon: 'calendar-outline', t: 'amber' as const },
+          { l: 'Recurring expenses & bills', v: -f.bills, icon: 'calendar-outline', t: 'amber' as const },
           { l: 'Goals & savings', v: -f.goals, icon: 'leaf-outline', t: 'blue' as const },
           { l: `Flexible spending (${fmt(f.spentSoFar)} so far)`, v: -f.dynamic, icon: 'basket-outline', t: 'gray' as const },
         ].map((r) => (
@@ -172,6 +199,19 @@ function Overview({ data: s }: { data: AppData }) {
 
       <Section title="Risky days">
         <Card style={{ gap: 12 }}>
+          {f.debits.length ? (
+            <>
+              <MonthRiskStrip days={f.riskDays} today={dayOfMonth} currencyFmt={fmt} />
+              <Txt v="small" muted>
+                {firstRisky
+                  ? `Around the ${ordinal(firstRisky.day)} your balance is likely to dip to about ${fmt(Math.round(firstRisky.balance / 10) * 10)}, under a week of usual spending${
+                      firstRisky.debitNames.length ? `, when ${firstRisky.debitNames.join(' and ')} goes off` : ''
+                    }. Keeping a little back before then avoids a squeeze.`
+                  : 'Dots mark the days your debits go off. Your balance looks comfortable all month.'}
+              </Txt>
+              <Divider style={{ marginVertical: 0 }} />
+            </>
+          ) : null}
           <HeatStrip days={risky} currencyFmt={fmt} />
           <Txt v="small" muted>
             {worst && worst.avg > 0
@@ -185,8 +225,29 @@ function Overview({ data: s }: { data: AppData }) {
 
       <Section title="This month by category">
         <Card style={{ gap: 12 }}>
-          {VARIABLE_CATEGORIES.filter((cat) => (avgs[cat] ?? 0) > 0 || spend(s.transactions, ms, addDays(today(), 1), [cat]) > 0).map((cat) => {
-            const mtd = spend(s.transactions, ms, addDays(today(), 1), [cat]);
+          {recurringPlan.map((plan) => {
+            const ratio = plan.scheduled > 0 ? plan.paid / plan.scheduled : 0;
+            return (
+              <View key={plan.category} style={{ gap: 6 }}>
+                <Row gap={10}>
+                  <Icon name={RECURRING_CATEGORY_ICON[plan.category]} size={18} color={c.textMuted} />
+                  <Txt v="bodyStrong" style={{ flex: 1 }}>
+                    {RECURRING_CATEGORY_LABEL[plan.category]}
+                  </Txt>
+                  <Txt v="small" tabular>
+                    {fmt(plan.paid)} <Txt v="small" muted>/ scheduled {fmt(plan.scheduled)}</Txt>
+                  </Txt>
+                </Row>
+                <ProgressBar value={ratio} tone={ratio > 1.05 ? 'amber' : 'blue'} />
+                <Txt v="caption" muted>
+                  {fmt(plan.dueSoFar)} due by today{plan.next ? ` · next: ${plan.next.name} on the ${ordinal(plan.next.day)}` : ''}
+                </Txt>
+              </View>
+            );
+          })}
+          {recurringPlan.length ? <Divider style={{ marginVertical: 0 }} /> : null}
+          {VARIABLE_CATEGORIES.filter((cat) => (avgs[cat] ?? 0) > 0 || spend(habits, ms, addDays(today(), 1), [cat]) > 0).map((cat) => {
+            const mtd = spend(habits, ms, addDays(today(), 1), [cat]);
             const norm = avgs[cat] ?? 0;
             const ratio = norm > 0 ? mtd / norm : 0;
             return (
@@ -204,39 +265,88 @@ function Overview({ data: s }: { data: AppData }) {
               </View>
             );
           })}
-          {Object.values(avgs).every((v) => !v) ? <Txt muted>No spending yet this month.</Txt> : null}
+          {Object.values(avgs).every((v) => !v) && !recurringPlan.length ? <Txt muted>No spending yet this month.</Txt> : null}
+          {recurringPlan.length ? (
+            <Txt v="caption" muted>
+              A bill counts as paid when a transaction with a matching name is in your statements or entries.
+            </Txt>
+          ) : null}
         </Card>
       </Section>
 
-      <Section title="Subscriptions & bills">
-        <Card padded={false} style={{ paddingHorizontal: 14, paddingVertical: 4 }}>
-          {s.bills.length === 0 ? <EmptyState icon="calendar-outline" title="No bills yet" body="Add a bank statement and we’ll find your recurring bills and subscriptions." /> : null}
-          {[...subs, ...fixed].map((b, i) => (
-            <View key={b.id}>
-              <ListRow
-                icon={b.isSubscription ? 'repeat-outline' : 'calendar-outline'}
-                iconTone={b.isSubscription ? 'blue' : 'amber'}
-                title={b.name}
-                subtitle={`${fmt(b.amount)}/${b.cadence === 'weekly' ? 'wk' : 'mo'} · day ${b.day}${b.usageNote ? ` · ${b.usageNote}` : ''}${b.active ? '' : ' · cancelled'}`}
-                right={
-                  b.isSubscription && b.active ? (
-                    <Button label="Cancel" small variant="tonal" tone="blue" onPress={() => useStore.getState().cancelBill(b.id)} />
-                  ) : !b.active ? (
-                    <Button label="Restore" small variant="ghost" tone="gray" onPress={() => useStore.getState().toggleBill(b.id)} />
-                  ) : null
-                }
-              />
-              {i < s.bills.length - 1 ? <Divider style={{ marginVertical: 0 }} /> : null}
-            </View>
-          ))}
-        </Card>
-        {subs.length ? (
-          <Txt v="caption" muted style={{ marginTop: 8 }}>
-            Marking a subscription cancelled sends what it cost to your Found Money inbox. Remember to cancel with the provider too.
-          </Txt>
-        ) : null}
-      </Section>
+      <RecurringBills expenses={s.recurringExpenses} />
     </View>
+  );
+}
+
+/** Recurring Expenses & Bills: fixed essentials apart from subscriptions, each editable. */
+function RecurringBills({ expenses }: { expenses: RecurringExpense[] }) {
+  const currency = useCurrency();
+  const fmt = (n: number) => money(n, currency);
+  const cancel = useStore((st) => st.cancelRecurringExpense);
+  const toggle = useStore((st) => st.toggleRecurringExpense);
+  const [editing, setEditing] = useState<RecurringExpense | null>(null);
+  const [adding, setAdding] = useState(false);
+  const groups = [
+    { title: 'Fixed essentials', items: expenses.filter((e) => e.isEssential && !isSubscription(e)) },
+    { title: 'Subscriptions', items: expenses.filter(isSubscription) },
+    { title: 'Other optional', items: expenses.filter((e) => !e.isEssential && !isSubscription(e)) },
+  ].filter((group) => group.items.length);
+  return (
+    <Section title="Recurring Expenses & Bills" action={{ label: 'Add', onPress: () => setAdding(true) }}>
+      {expenses.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon="calendar-outline"
+            title="No recurring expenses yet"
+            body="Add rent, transport, utilities, insurance, subscriptions or debt repayments, or add a bank statement and confirm the ones we find."
+            action={<Button label="Add a recurring expense" small onPress={() => setAdding(true)} />}
+          />
+        </Card>
+      ) : null}
+      <View style={{ gap: 12 }}>
+        {groups.map((group) => (
+          <View key={group.title} style={{ gap: 6 }}>
+            <Row style={{ justifyContent: 'space-between' }}>
+              <Txt v="smallStrong" muted>
+                {group.title}
+              </Txt>
+              <Txt v="small" muted tabular>
+                {fmt(Math.round(monthlyRecurringTotal(group.items)))}/mo
+              </Txt>
+            </Row>
+            <Card padded={false} style={{ paddingHorizontal: 14, paddingVertical: 4 }}>
+              {group.items.map((e, i) => (
+                <View key={e.id}>
+                  <ListRow
+                    icon={RECURRING_CATEGORY_ICON[e.category]}
+                    iconTone={isSubscription(e) ? 'blue' : 'amber'}
+                    title={e.name}
+                    subtitle={`${RECURRING_CATEGORY_LABEL[e.category]} · ${recurringSubtitle(e, fmt)}${e.usageNote ? ` · ${e.usageNote}` : ''}`}
+                    onPress={() => setEditing(e)}
+                    right={
+                      isSubscription(e) && e.active ? (
+                        <Button label="Cancel" small variant="tonal" tone="blue" onPress={() => cancel(e.id)} />
+                      ) : !e.active ? (
+                        <Button label="Restore" small variant="ghost" tone="gray" onPress={() => toggle(e.id)} />
+                      ) : null
+                    }
+                  />
+                  {i < group.items.length - 1 ? <Divider style={{ marginVertical: 0 }} /> : null}
+                </View>
+              ))}
+            </Card>
+          </View>
+        ))}
+      </View>
+      {expenses.some(isSubscription) ? (
+        <Txt v="caption" muted style={{ marginTop: 8 }}>
+          Marking a subscription cancelled sends what it cost to your Found Money inbox. Remember to cancel with the provider too.
+        </Txt>
+      ) : null}
+      <RecurringExpenseSheet visible={adding} onClose={() => setAdding(false)} />
+      <RecurringExpenseSheet visible={!!editing} onClose={() => setEditing(null)} expense={editing} />
+    </Section>
   );
 }
 

@@ -5,7 +5,10 @@ import {
   parseBankStatementText,
   parseBankStatementItems,
   parseStatementAmount,
-  recurringBillsFromStatement,
+  detectedRecurringExpenses,
+  isSameRecurringExpense,
+  recurringExpensesFromStatement,
+  splitRecurringSuggestions,
   toAppTransactions,
 } from '../src/lib/bankStatement.ts';
 
@@ -140,12 +143,106 @@ Opening Balance 1,000.00Cr
 31 Jan DebiCheck Finchoice 500.00 10,000.00Cr
 Closing Balance 10,000.00Cr`);
 
-  const bills = recurringBillsFromStatement(document);
+  const expenses = recurringExpensesFromStatement(document);
   assert.equal(document.analysis.debtBurdenPercent, 10);
-  assert.equal(bills.length, 1);
-  assert.equal(bills[0].name, 'Finchoice');
-  assert.equal(bills[0].cadence, 'monthly');
-  assert.equal(bills[0].amount, 500);
+  assert.equal(expenses.length, 1);
+  assert.equal(expenses[0].name, 'Finchoice');
+  assert.equal(expenses[0].frequency, 'monthly');
+  assert.equal(expenses[0].amount, 500);
+  assert.equal(expenses[0].category, 'debt');
+  assert.equal(expenses[0].billingDayOfMonth, 31);
+  assert.equal(expenses[0].isEssential, true);
+  assert.equal(expenses[0].source, 'bank_statement');
+  assert.equal(expenses[0].confidence, 'high');
+});
+
+const recurringStatement = `FNB Aspire Current Account
+Statement Period: 01 Jan 2025 to 28 Feb 2025
+01 Jan 2025 Debit Order Discovery Life 450.00
+03 Jan 2025 FNB App Payment To Landlord Rent 7,500.00
+05 Jan 2025 Gautrain Card Load 200.00
+06 Jan 2025 Kwikspar Groceries 412.50
+09 Jan 2025 DebiCheck Outsurance 389.00
+12 Jan 2025 Gautrain Card Load 200.00
+15 Jan 2025 Netflix.com 199.00
+19 Jan 2025 Gautrain Card Load 200.00
+21 Jan 2025 Kwikspar Groceries 188.20
+26 Jan 2025 Gautrain Card Load 200.00
+28 Jan 2025 RTC Express Pmt To Savings Pocket 1,000.00
+01 Feb 2025 Debit Order Discovery Life 450.00
+02 Feb 2025 Gautrain Card Load 200.00
+03 Feb 2025 FNB App Payment To Landlord Rent 7,500.00
+09 Feb 2025 Gautrain Card Load 200.00
+15 Feb 2025 Netflix.com 199.00
+16 Feb 2025 Gautrain Card Load 200.00
+17 Feb 2025 Kwikspar Groceries 260.00
+23 Feb 2025 Gautrain Card Load 200.00
+28 Feb 2025 RTC Express Pmt To Savings Pocket 1,000.00`;
+
+test('detects South African debit orders, EFTs and repeated card charges as recurring expenses', () => {
+  const document = parseBankStatementText(recurringStatement);
+  const byName = new Map(detectedRecurringExpenses(document).map((expense) => [expense.name, expense]));
+
+  assert.deepEqual([...byName.keys()].sort(), ['Discovery Life', 'Gautrain Card Load', 'Landlord Rent', 'Netflix.com', 'Outsurance']);
+
+  const rent = byName.get('Landlord Rent');
+  assert.deepEqual(
+    { amount: rent.amount, category: rent.category, frequency: rent.frequency, day: rent.billingDayOfMonth, essential: rent.isEssential, confidence: rent.confidence },
+    { amount: 7500, category: 'housing', frequency: 'monthly', day: 3, essential: true, confidence: 'high' },
+  );
+  assert.equal(byName.get('Discovery Life').category, 'insurance');
+  assert.equal(byName.get('Netflix.com').category, 'subscriptions');
+  assert.equal(byName.get('Netflix.com').isEssential, false);
+  assert.equal(byName.get('Netflix.com').billingDayOfMonth, 15);
+
+  const gautrain = byName.get('Gautrain Card Load');
+  assert.equal(gautrain.category, 'transport');
+  assert.equal(gautrain.frequency, 'weekly');
+  assert.equal(gautrain.amount, 200);
+  assert.equal(gautrain.billingDayOfMonth, 5);
+
+  // A debit order seen once is still suggested, but marked for confirmation.
+  assert.equal(byName.get('Outsurance').confidence, 'medium');
+  assert.equal(byName.get('Outsurance').category, 'insurance');
+  // Groceries vary and transfers to your own savings are not bills.
+  assert.ok(![...byName.keys()].some((name) => /kwikspar|savings/i.test(name)));
+});
+
+test('does not suggest recurring expenses that are already saved', () => {
+  const document = parseBankStatementText(recurringStatement);
+  const saved = [
+    // Same payee under a shorter name.
+    { id: 'manual-1', name: 'Netflix', amount: 199, category: 'subscriptions', billingDayOfMonth: 14, frequency: 'monthly', isEssential: false, source: 'manual', active: true },
+    // Typed in under another name: same category, same amount, billing day one day off.
+    { id: 'manual-2', name: 'My flat', amount: 7500, category: 'housing', billingDayOfMonth: 2, frequency: 'monthly', isEssential: true, source: 'manual', active: true },
+    // A cancelled subscription is still "already saved".
+    { id: 'manual-3', name: 'Gautrain', amount: 200, category: 'transport', billingDayOfMonth: 5, frequency: 'weekly', isEssential: true, source: 'manual', active: false },
+  ];
+
+  const fresh = recurringExpensesFromStatement(document, saved);
+  assert.deepEqual(fresh.map((expense) => expense.name).sort(), ['Discovery Life', 'Outsurance']);
+
+  const split = splitRecurringSuggestions(detectedRecurringExpenses(document), saved);
+  assert.deepEqual(
+    split.alreadySaved.map(({ suggestion, existing }) => [suggestion.name, existing.id]).sort(),
+    [['Gautrain Card Load', 'manual-3'], ['Landlord Rent', 'manual-2'], ['Netflix.com', 'manual-1']],
+  );
+
+  // Importing the same statement twice adds nothing the second time.
+  const firstImport = recurringExpensesFromStatement(document);
+  assert.deepEqual(recurringExpensesFromStatement(document, firstImport), []);
+});
+
+test('keeps a second policy from the same payee and drops repeats within one statement', () => {
+  const base = { category: 'insurance', billingDayOfMonth: 1, frequency: 'monthly', isEssential: true, source: 'bank_statement', active: true };
+  const life = { ...base, id: 's-1', name: 'Discovery Life', amount: 450 };
+  const car = { ...base, id: 's-2', name: 'Discovery Life', amount: 1450 };
+  const repeat = { ...base, id: 's-3', name: 'DISCOVERY LIFE', amount: 455 };
+
+  assert.equal(isSameRecurringExpense(car, life), false);
+  assert.equal(isSameRecurringExpense(repeat, life), true);
+  const split = splitRecurringSuggestions([life, car, repeat], []);
+  assert.deepEqual(split.fresh.map((expense) => expense.id), ['s-1', 's-2']);
 });
 
 test('flags large spending outliers and failed debit-order attempts', () => {

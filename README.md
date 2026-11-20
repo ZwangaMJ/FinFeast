@@ -54,7 +54,7 @@ FinFeast requires an account. People sign in with email and password; confirming
 | Onboarding (5 steps, manual-mode fallback, notifications asked last) | `src/app/onboarding.tsx` |
 | Document flow U2–U6: upload sheet, type confirm, processing, review with confidence tints, conflicts, duplicates, illegible scans | `src/components/DocumentFlow.tsx` |
 | Home: safety-net strip, hero flexible number, food ring, today's meals, insight of the day, quick actions | `src/app/(tabs)/index.tsx` |
-| Money: cashflow forecast with confidence band, actual-vs-plan bars, risky-day heat strip, category envelopes, subscriptions manager, transactions (re-categorise, question chips), documents | `src/app/(tabs)/money.tsx` |
+| Money: cashflow forecast with confidence band, actual-vs-plan bars, risky-day heat strip, category envelopes, Recurring Expenses & Bills (fixed essentials vs subscriptions), transactions (re-categorise, question chips), documents | `src/app/(tabs)/money.tsx` |
 | Meals: 7-day plan, swap meal / regenerate day / week, batch-cook leftovers, cheaper swaps, budget-light proposals, nutrition-floor conflict, grocery list, pantry | `src/app/(tabs)/meals.tsx`, `src/app/meal/[id].tsx`, `src/app/grocery.tsx`, `src/app/pantry.tsx` |
 | Goals: Security Meter, Found Money inbox (send / split / keep), goal detail with rule builder (meal surplus, payday sweep, % split, round-ups, month-end check) | `src/app/(tabs)/goals.tsx`, `src/app/goal/` |
 | Profile: household & diet, money basics, theme (system/light/dark), notifications, export JSON, delete all data | `src/app/(tabs)/profile.tsx` |
@@ -62,10 +62,11 @@ FinFeast requires an account. People sign in with email and password; confirming
 Engines (pure TypeScript, no UI):
 
 - `src/lib/mealPlanner.ts` — constraint solver: hard filters → budget ceiling → calories ±10% & protein floor → variety → batch cooking; pack-rounded, consolidated grocery list with pantry credits; honest `budget_floor_conflict`.
-- `src/lib/budget.ts` — income − bills − committed goals = flexible money; month forecast; risky days; Security Meter.
+- `src/lib/recurring.ts` — recurring expenses (rent, transport, utilities, insurance, subscriptions, debt): monthly equivalents, debits placed on billing days, low-balance days, bill creep, fixed-cost ratio.
+- `src/lib/budget.ts` — income − recurring expenses − committed goals = flexible money; month forecast; risky days; Security Meter.
 - `src/lib/payslip.ts` — South African payslip DTO extraction, currency normalization, validation warnings, and disposable-income analysis.
-- `src/lib/bankStatement.ts` — local, multi-page South African bank statement parsing, transaction categorization, balance reconciliation, recurring-payment analysis, and cash-flow insights.
-- `src/lib/insights.ts` — ranked, data-anchored insights ((money × actionability) ÷ effort), never shaming.
+- `src/lib/bankStatement.ts` — local, multi-page South African bank statement parsing, transaction categorization, balance reconciliation, recurring-payment detection (debit orders, EFTs, repeat card charges) with de-duplication against saved expenses, and cash-flow insights.
+- `src/lib/insights.ts` — ranked, data-anchored insights ((money × actionability) ÷ effort), fixed obligations kept apart from everyday habits, never shaming.
 - `src/store/useStore.ts` — app state, locally persisted on the device, Found Money routing rules, weekly rollover (underspend → Found Money, overspend → budget-light week), payday and month-end rules.
 
 ## Not real yet

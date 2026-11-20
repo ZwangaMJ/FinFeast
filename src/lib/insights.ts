@@ -2,28 +2,34 @@
  * Actionable insights engine (spec §3.4). Rule-based and data-anchored: every
  * insight carries an amount, one action and a destination goal, and is ranked by
  * (money at stake × actionability) ÷ effort. Copy never shames.
+ *
+ * Insights are grouped: 'fixed' covers recurring obligations (subscriptions,
+ * bill increases, the fixed-cost ratio); 'habit' covers everyday spending.
  */
 import { addDays, DAY_LONG, monthStart, today, weekStart } from '@/lib/dates';
 import { money, PRICE_FACTOR } from '@/lib/format';
 import { allSwapKeys, servingCost } from '@/lib/mealPlanner';
-import { categoryAverages, riskyDays, spend, weeklyFlexible } from '@/lib/budget';
-import { MEAL_SLOTS, type Bill, type Currency, type Goal, type Income, type MealPlan, type Transaction } from '@/store/types';
+import { categoryAverages, discretionaryTransactions, monthlyIncome, riskyDays, spend, weeklyFlexible } from '@/lib/budget';
+import { fixedCostRatio, FREQUENCY_SHORT, isSubscription, monthlyAmount, recurringCreep } from '@/lib/recurring';
+import { MEAL_SLOTS, type Currency, type Goal, type Income, type MealPlan, type RecurringExpense, type Transaction } from '@/store/types';
 
 export type Insight = {
   id: string;
-  type: 'subscription' | 'dining' | 'grocery' | 'waste' | 'reallocation';
+  type: 'subscription' | 'creep' | 'fixed_costs' | 'dining' | 'grocery' | 'waste' | 'reallocation';
+  /** 'fixed' = recurring obligations, 'habit' = everyday spending. */
+  group: 'fixed' | 'habit';
   icon: string;
   headline: string;
   detail: string;
   amountMonthly: number;
   amountLabel: string;
-  action: { label: string; kind: 'cancel' | 'plan' | 'swap' | 'assign'; billId?: string; amount?: number };
+  action: { label: string; kind: 'cancel' | 'plan' | 'swap' | 'assign' | 'review'; expenseId?: string; amount?: number };
   destinationGoalId: string | null;
   score: number;
 };
 
 export type InsightInput = {
-  bills: Bill[];
+  recurringExpenses: RecurringExpense[];
   transactions: Transaction[];
   goals: Goal[];
   plan: MealPlan | null;
@@ -36,6 +42,9 @@ export type InsightInput = {
 };
 
 const MIN_MONTHLY_ZAR = 50;
+const MIN_CREEP_ZAR = 10;
+/** Housing + transport above this share of take-home gets a gentle heads-up. */
+const FIXED_COST_GUIDE = 0.5;
 
 export function generateInsights(s: InsightInput): Insight[] {
   const c = s.currency;
@@ -45,45 +54,93 @@ export function generateInsights(s: InsightInput): Insight[] {
   const out: Insight[] = [];
   const t = today();
 
-  // a. Subscriptions with low usage
-  s.bills
-    .filter((b) => b.active && b.isSubscription)
-    .forEach((b) => {
-      const yearly = b.amount * 12;
-      const lowUse = !!b.usageNote;
+  // a. Subscriptions with low usage (optional recurring expenses)
+  s.recurringExpenses
+    .filter((e) => e.active && isSubscription(e))
+    .forEach((e) => {
+      const monthly = monthlyAmount(e);
+      const yearly = monthly * 12;
+      const lowUse = !!e.usageNote;
       out.push({
-        id: `sub-${b.id}`,
+        id: `sub-${e.id}`,
         type: 'subscription',
+        group: 'fixed',
         icon: 'repeat-outline',
-        headline: `Free up ${fmt(yearly)} a year from ${b.name}`,
+        headline: `Free up ${fmt(yearly)} a year from ${e.name}`,
         detail: lowUse
-          ? `You've paid ${fmt(b.amount)}/mo for ${b.monthsPaid ?? 'several'} months and ${b.usageNote}. Cancelling sends ${fmt(yearly)}/yr to ${destName}.`
-          : `${b.name} costs ${fmt(b.amount)}/mo. If you rarely use it, cancelling sends ${fmt(yearly)}/yr to ${destName}.`,
-        amountMonthly: b.amount,
-        amountLabel: `${fmt(b.amount)}/mo`,
-        action: { label: 'Mark as cancelled', kind: 'cancel', billId: b.id, amount: b.amount },
+          ? `You've paid ${fmt(monthly)}/mo for ${e.monthsPaid ?? 'several'} months and ${e.usageNote}. Cancelling sends ${fmt(yearly)}/yr to ${destName}.`
+          : `${e.name} costs ${fmt(monthly)}/mo. If you rarely use it, cancelling sends ${fmt(yearly)}/yr to ${destName}.`,
+        amountMonthly: monthly,
+        amountLabel: `${fmt(monthly)}/mo`,
+        action: { label: 'Mark as cancelled', kind: 'cancel', expenseId: e.id, amount: monthly },
         destinationGoalId: dest?.id ?? null,
-        score: (b.amount * (lowUse ? 0.9 : 0.4)) / 1,
+        score: (monthly * (lowUse ? 0.9 : 0.4)) / 1,
       });
     });
 
+  // a2. Recurring bills that went up (creep)
+  recurringCreep(s.recurringExpenses, s.transactions, MIN_CREEP_ZAR * PRICE_FACTOR[c]).forEach((creep) => {
+    const e = creep.expense;
+    const optional = isSubscription(e);
+    out.push({
+      id: `creep-${e.id}-${Math.round(creep.to)}`,
+      type: 'creep',
+      group: 'fixed',
+      icon: 'trending-up-outline',
+      headline: `${e.name} went up ${fmt(creep.to - creep.from)}`,
+      detail: `It was ${fmt(creep.from)}/${FREQUENCY_SHORT[e.frequency]}${creep.since ? ` in ${creep.since.slice(0, 7)}` : ''} and is now ${fmt(creep.to)}. ${
+        optional ? 'Check whether a cheaper plan still covers what you use.' : 'A quick call or a comparison quote can often bring it back down.'
+      } Anything you save can go to ${destName}.`,
+      amountMonthly: creep.monthlyIncrease,
+      amountLabel: `+${fmt(creep.monthlyIncrease)}/mo`,
+      action: { label: 'Review bill', kind: 'review', expenseId: e.id },
+      destinationGoalId: dest?.id ?? null,
+      score: (creep.monthlyIncrease * (optional ? 0.7 : 0.6)) / 1.5,
+    });
+  });
+
+  // a3. Fixed-cost ratio: housing + transport share of take-home
+  const income = monthlyIncome(s.income);
+  const ratio = fixedCostRatio(s.recurringExpenses, income);
+  if (ratio && ratio.ratio > FIXED_COST_GUIDE) {
+    const above = ratio.total - income * FIXED_COST_GUIDE;
+    const pct = Math.round(ratio.ratio * 100);
+    out.push({
+      id: `fixed-ratio-${Math.round(ratio.ratio * 20)}`,
+      type: 'fixed_costs',
+      group: 'fixed',
+      icon: 'home-outline',
+      headline: `Housing and transport take ${pct}% of your take-home`,
+      detail: `That's ${fmt(ratio.housing)} housing and ${fmt(ratio.transport)} transport a month. A common guide is about half, so this is worth keeping in mind when a lease renews or your commute changes. Each ${fmt(500 * PRICE_FACTOR[c])} less a month is ${fmt(6000 * PRICE_FACTOR[c])} a year for ${destName}.`,
+      amountMonthly: above,
+      amountLabel: `${pct}%`,
+      action: { label: 'Review bills', kind: 'review' },
+      destinationGoalId: dest?.id ?? null,
+      // Big money, but slow to change: low actionability, high effort.
+      score: (above * 0.15) / 3,
+    });
+  }
+
   // b. Eating out vs the user's own baseline, plus risky-day pattern
-  const avgs = categoryAverages(s.transactions);
+  // Habits only: payments of saved recurring expenses are obligations, not habits.
+  const habits = discretionaryTransactions(s.transactions, s.recurringExpenses);
+  const avgs = categoryAverages(habits);
   const norm = avgs.food_dining ?? 0;
   const ms = monthStart(t);
   const dayOfMonth = Number(t.slice(8, 10));
-  const diningMtd = spend(s.transactions, ms, addDays(t, 1), ['food_dining']);
+  const diningMtd = spend(habits, ms, addDays(t, 1), ['food_dining']);
   const pace = dayOfMonth >= 7 ? (diningMtd / dayOfMonth) * 30 : norm;
-  const diningTx = s.transactions.filter((x) => x.category === 'food_dining' && x.date >= addDays(t, -56));
+  const diningTx = habits.filter((x) => x.category === 'food_dining' && x.date >= addDays(t, -56));
   const avgTicket = diningTx.length ? diningTx.reduce((a, b) => a + b.amount, 0) / diningTx.length : 0;
   const homeDinner = s.plan ? servingCost(s.plan.days[0].slots.dinner.recipeId, [], c) * s.householdSize : 40 * PRICE_FACTOR[c];
   const perDinner = Math.max(0, avgTicket - homeDinner);
-  const risky = riskyDays(s.transactions, 50 * PRICE_FACTOR[c]).filter((d) => d.risky).sort((a, b) => b.avg - a.avg)[0];
+  const risky = riskyDays(habits, 50 * PRICE_FACTOR[c]).filter((d) => d.risky).sort((a, b) => b.avg - a.avg)[0];
   if (perDinner > 0 && (pace > norm * 1.1 || risky)) {
     const weekly = perDinner * 2;
     out.push({
       id: `dining-${weekStart(t)}`,
       type: 'dining',
+      group: 'habit',
       icon: 'restaurant-outline',
       headline: `Two home-cooked dinners ≈ ${fmt(weekly)} back`,
       detail: risky
@@ -108,6 +165,7 @@ export function generateInsights(s: InsightInput): Insight[] {
     out.push({
       id: `brand-${recent.length}`,
       type: 'grocery',
+      group: 'habit',
       icon: 'pricetags-outline',
       headline: `Store brands on ${branded.length} staples ≈ ${fmt(weekly)}/wk`,
       detail: `Brand items are ${Math.round(share * 100)}% of your basket. Switching those staples keeps the same meals and sends ${fmt(weekly * 4.3)}/mo to ${destName}.`,
@@ -134,6 +192,7 @@ export function generateInsights(s: InsightInput): Insight[] {
       out.push({
         id: `swaps-${s.plan.weekStart}`,
         type: 'grocery',
+        group: 'habit',
         icon: 'swap-horizontal-outline',
         headline: `Cheaper swaps save ≈ ${fmt(saving)} this week`,
         detail: `${count} meals have store-brand or frozen swaps that keep the same dish. Apply them and the difference goes to ${destName}.`,
@@ -155,6 +214,7 @@ export function generateInsights(s: InsightInput): Insight[] {
       out.push({
         id: `waste-${name}`,
         type: 'waste',
+        group: 'habit',
         icon: 'leaf-outline',
         headline: `Use up ${name.toLowerCase()} with your plan`,
         detail: `You bought ${name.toLowerCase()} ${times}× this month. Your plan now uses one bunch across several meals — about ${fmt(spent / 2)} back.`,
@@ -170,7 +230,7 @@ export function generateInsights(s: InsightInput): Insight[] {
   // d. Unallocated flexible money this week
   const ws = weekStart(t);
   if (s.income && !s.assignedWeeks.includes(ws)) {
-    const flex = weeklyFlexible(s.income, s.bills, s.goals);
+    const flex = weeklyFlexible(s.income, s.recurringExpenses, s.goals);
     const otherWeekly = ((avgs.food_dining ?? 0) + (avgs.transport ?? 0) + (avgs.shopping ?? 0) + (avgs.entertainment ?? 0) + (avgs.health ?? 0) + (avgs.household ?? 0) + (avgs.other ?? 0)) / 4.3;
     const food = s.weeklyFoodBudget;
     const unallocated = Math.floor((flex - food - otherWeekly) / 10) * 10;
@@ -178,6 +238,7 @@ export function generateInsights(s: InsightInput): Insight[] {
       out.push({
         id: `realloc-${ws}`,
         type: 'reallocation',
+        group: 'habit',
         icon: 'git-branch-outline',
         headline: `${fmt(unallocated)} is unassigned this week`,
         detail: `After bills, food and your usual spending, ${fmt(unallocated)} has no job yet. Give it one — ${destName} is a good home.`,
@@ -191,6 +252,6 @@ export function generateInsights(s: InsightInput): Insight[] {
   }
 
   return out
-    .filter((i) => i.amountMonthly >= MIN_MONTHLY_ZAR * PRICE_FACTOR[c] && !s.dismissed.includes(i.id))
+    .filter((i) => i.amountMonthly >= (i.type === 'creep' ? MIN_CREEP_ZAR : MIN_MONTHLY_ZAR) * PRICE_FACTOR[c] && !s.dismissed.includes(i.id))
     .sort((a, b) => b.score - a.score);
 }

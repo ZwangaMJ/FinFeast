@@ -21,11 +21,11 @@ export default function NewGoal() {
   const { tone } = useTheme();
   const goals = useStore((s) => s.goals);
   const currency = useStore((s) => s.profile.currency);
-  const bills = useStore((s) => s.bills);
+  const recurringExpenses = useStore((s) => s.recurringExpenses);
   const food = useStore((s) => s.weeklyFoodBudget);
   const addGoal = useStore((s) => s.addGoal);
   const hasEmergency = goals.some((g) => g.type === 'emergency');
-  const suggestedEmergencyTarget = emergencyTarget(bills, food);
+  const suggestedEmergencyTarget = emergencyTarget(recurringExpenses, food);
   const [type, setType] = useState<GoalType>(hasEmergency ? 'short_term' : 'emergency');
   const [name, setName] = useState('');
   const [target, setTarget] = useState(!hasEmergency && suggestedEmergencyTarget > 0 ? String(suggestedEmergencyTarget) : '');

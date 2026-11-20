@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Platform, Share, View } from 'react-native';
 
 import { AccountSettings } from '@/components/AccountSettings';
+import { RecurringExpenseList } from '@/components/RecurringExpenses';
 import { AmountInput, Button, Card, Chip, Divider, Icon, ListRow, Pill, Row, Screen, Section, Segmented, Sheet, Stepper, ToggleRow, Txt, useCurrency } from '@/components/ui';
 import { CURRENCY_LABELS, money } from '@/lib/format';
 import type { Allergen, Currency, DietPattern, ThemeMode } from '@/store/types';
@@ -134,6 +135,10 @@ export default function Profile() {
           <Divider style={{ marginVertical: 0 }} />
           <ListRow icon="document-text-outline" iconTone="blue" title="Documents" subtitle={`${s.documents.filter((d) => d.status === 'confirmed').length} added`} chevron onPress={() => router.push('/upload')} />
         </Card>
+        <Txt v="bodyStrong" style={{ marginTop: 14, marginBottom: 8 }}>
+          Recurring expenses & bills
+        </Txt>
+        <RecurringExpenseList />
         <Txt v="bodyStrong" style={{ marginTop: 14, marginBottom: 8 }}>
           Currency & region
         </Txt>
