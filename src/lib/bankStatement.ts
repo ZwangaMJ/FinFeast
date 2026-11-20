@@ -1,4 +1,4 @@
-import type { Category, Confidence, Transaction } from '@/store/types';
+import type { Category, Confidence, RecurringCategory, RecurringExpense, RecurringFrequency, Transaction } from '@/store/types';
 
 export type StatementBalance = Readonly<{
   amount: number;
@@ -46,14 +46,21 @@ export type StatementTransaction = Readonly<{
   issues: readonly StatementIssue[];
 }>;
 
+export type RecurringChannel = 'debit_order' | 'eft' | 'card';
+
 export type RecurringObligation = Readonly<{
+  key: string;
   merchant: string;
-  category: 'debt' | 'fees' | 'utilities' | 'entertainment' | 'other';
-  averageAmount: number;
-  cadence: 'weekly' | 'monthly' | 'irregular';
+  category: RecurringCategory;
+  channel: RecurringChannel;
+  averageAmount: number; // median amount per debit
+  cadence: RecurringFrequency | 'irregular';
   occurrences: number;
+  months: number;
+  billingDay: number;
   firstDate: string;
   lastDate: string;
+  confidence: Confidence;
 }>;
 
 export type StatementAnomaly = Readonly<{
@@ -473,37 +480,146 @@ function median(values: readonly number[]): number {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-function recurringObligations(transactions: readonly StatementTransaction[]): RecurringObligation[] {
-  const groups = new Map<string, StatementTransaction[]>();
-  for (const transaction of transactions) {
-    if (transaction.flow !== 'debit' || !['debt', 'fees', 'utilities', 'entertainment'].includes(transaction.category)) continue;
-    const key = `${transaction.category}:${transaction.merchant.toLowerCase()}`;
-    const group = groups.get(key);
-    if (group) group.push(transaction);
-    else groups.set(key, [transaction]);
+const DEBIT_ORDER = /debicheck|debit\s*order|edo\s+collection|\bnaedo\b|\bacb\s+debit|magtape|\bdebit\s+(?:instruction|mandate)|insurance\s+prem|\bpremium\b/i;
+const EFT = /\beft\b|internet\s+(?:pmt|payment|trf|transfer)|payment\s+to|pmt\s+to|send\s+money|express\s+pmt|immediate\s+(?:pmt|payment)|digital\s+payment|payshap|fnb\s+app\s+payment|scheduled\s+payment|stop\s+order|int-banking/i;
+const OWN_MONEY = /saving|investment|pocket|own\s+account|to\s+self|\bsave\b|tax\s+free|unit\s+trust/i;
+const HOUSING = /\brent(?:al)?\b|\blev(?:y|ies)\b|body\s*corp|home\s*loan|\bbond\b|mortgage|sectional\s+title|\bhoa\b|property\s+(?:management|rentals?)|rawson|pam\s+golding|seeff|tenant|landlord|accommodation|res(?:idence)?\s+fees/i;
+const INSURANCE = /insur|assur|\blife\b|funeral|outsurance|miway|king\s*price|hollard|discovery|momentum|old\s*mutual|sanlam|liberty|clientele|assupol|avbob|metropolitan|1life|dial\s+direct|first\s+for\s+women|auto\s*(?:&|and)\s*general|santam|medical\s+aid|medshield|bonitas|fedhealth|\bgems\b|bestmed|keyhealth|bankmed|polmed/i;
+const TRANSPORT = /vehicle|\bvaf\b|wesbank|\bmfc\b|car\s+(?:finance|instal)|auto\s+finance|(?:toyota|vw|bmw|ford|nissan|hyundai)\s+fin|gautrain|metrorail|prasa|myciti|rea\s+vaya|areyeng|a\s+re\s+yeng|go\s*george|\btaxi\b|e-?toll|sanral|tracker|cartrack|netstar|ctrack|lift\s*club|\bbus\s+(?:pass|card|ticket)/i;
+const UTILITIES = /electric|eskom|municipal|city\s+of|\bcoj\b|tshwane|ekurhuleni|ethekwini|msunduzi|mangaung|nelson\s+mandela\s+bay|\brates\b|\bwater\b|refuse|sewer|telkom|vumatel|openserve|frogfoot|octotel|metrofibre|fibre|afrihost|webafrica|cool\s*ideas|axxess|\brain\b|vodacom|\bmtn\b|cell\s*c|internet|uncapped|prepaid/i;
+const SUBSCRIPTIONS = /netflix|spotify|showmax|dstv|multichoice|apple\.com|apple\s+(?:music|tv|one)|itunes|icloud|google\s+(?:one|storage|play)|youtube|amazon\s+prime|prime\s+video|disney|deezer|audible|microsoft|xbox|playstation|\bpsn\b|adobe|canva|chatgpt|openai|virgin\s+active|planet\s+fitness|\bgym\b|zoom\.us|dropbox|patreon|subscription|uber\s+one|news24|linkedin/i;
+const DEBT = /loan|finchoice|unifi|credit\s+card|card\s+repay|repayment|pay\s*just\s*now|\bnpj|mobicred|\brcs\b|edgars|truworths|foschini|\btfg\b|jet\s+(?:card|account)|(?:woolworths|mr\s*price)\s+(?:card|account|fin)|\blewis\b|ok\s+furniture|wonga|capfin|african\s+bank|direct\s*axis|nsfas|credit\s+agreement|instal(?:l)?ment|store\s+card|account\s+payment/i;
+
+/** South African payee keywords → recurring-expense category. */
+export function recurringCategoryFor(description: string, category: StatementCategory = 'other'): RecurringCategory {
+  if (HOUSING.test(description)) return 'housing';
+  if (INSURANCE.test(description)) return 'insurance';
+  if (TRANSPORT.test(description)) return 'transport';
+  if (SUBSCRIPTIONS.test(description)) return 'subscriptions';
+  if (UTILITIES.test(description)) return 'utilities';
+  if (DEBT.test(description)) return 'debt';
+  switch (category) {
+    case 'debt': return 'debt';
+    case 'utilities': return 'utilities';
+    case 'transport': return 'transport';
+    case 'entertainment': return 'subscriptions';
+    default: return 'other';
   }
-  return [...groups.values()].flatMap((items) => {
-    const sorted = [...items].sort((a, b) => a.date.localeCompare(b.date));
-    if (sorted.length < 2) return [];
-    const distinctMonths = new Set(sorted.map((item) => item.date.slice(0, 7))).size;
-    const gaps = sorted.slice(1).map((item, index) => {
-      return (Date.parse(`${item.date}T00:00:00Z`) - Date.parse(`${sorted[index].date}T00:00:00Z`)) / 86400000;
+}
+
+function recurringChannel(transaction: StatementTransaction): RecurringChannel | null {
+  const text = transaction.descriptionRaw || transaction.description;
+  if (transaction.flow !== 'debit' || !transaction.posted) return null;
+  if (transaction.category === 'income' || transaction.category === 'cash' || transaction.category === 'fees') return null;
+  if (DEBIT_ORDER.test(text)) return 'debit_order';
+  if (EFT.test(text) || transaction.category === 'transfer') return OWN_MONEY.test(text) ? null : 'eft';
+  return 'card';
+}
+
+/** Payee name without payment-rail prefixes, references and trailing numbers. */
+function payeeName(transaction: StatementTransaction): string {
+  const name = transaction.merchant
+    .replace(/^(?:fnb\s+app\s+payment\s+to|internet\s+(?:pmt|payment|trf|transfer)\s+to|rtc\s+express\s+pmt\s+to|express\s+pmt\s+to|immediate\s+(?:pmt|payment)\s+to|digital\s+payment\s+to|payment\s+to|pmt\s+to|eft\s+to|send\s+money\s+to|scheduled\s+payment\s+to|stop\s+order\s+to|int-banking\s+pmt\s+(?:to|frm)|acb\s+debit|magtape\s+debit|naedo|debit\s+order|order|eft|payshap|send\s+money)\b[\s:*-]*/i, '')
+    .replace(/\b(?:ins(?:urance)?\s+prem(?:ium)?|premium|monthly|debit)\b/gi, ' ')
+    .replace(/[\s-]*\b\d[\d\s/-]*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return name || transaction.merchant;
+}
+
+function payeeKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function daysApart(a: string, b: string): number {
+  return (Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000;
+}
+
+function cadenceOf(sorted: readonly StatementTransaction[]): RecurringObligation['cadence'] {
+  if (sorted.length < 2) return 'monthly';
+  const gap = median(sorted.slice(1).map((item, index) => daysApart(sorted[index].date, item.date)));
+  const months = new Set(sorted.map((item) => item.date.slice(0, 7))).size;
+  if (gap >= 5 && gap <= 9) return 'weekly';
+  if (gap >= 12 && gap <= 17) return 'biweekly';
+  if (months >= 2 && gap >= 24 && gap <= 38) return 'monthly';
+  return 'irregular';
+}
+
+/** Splits a payee's debits into amount clusters when it charges more than once a month (e.g. two policies). */
+function amountClusters(items: readonly StatementTransaction[]): StatementTransaction[][] {
+  const months = new Set(items.map((item) => item.date.slice(0, 7))).size;
+  if (items.length <= months) return [[...items]];
+  const clusters: StatementTransaction[][] = [];
+  for (const item of [...items].sort((a, b) => a.amount - b.amount)) {
+    const cluster = clusters.find((group) => Math.abs(group[0].amount - item.amount) <= Math.max(1, group[0].amount * 0.05));
+    if (cluster) cluster.push(item);
+    else clusters.push([item]);
+  }
+  return clusters;
+}
+
+/**
+ * Debit orders, EFTs and repeated card charges that look like recurring
+ * expenses. Debit orders count even when seen once (they are recurring by
+ * nature); EFTs need a regular cadence and steady amount, or a housing payee;
+ * card charges need a known subscription payee or identical regular amounts.
+ */
+function recurringObligations(transactions: readonly StatementTransaction[]): RecurringObligation[] {
+  const groups = new Map<string, { channel: RecurringChannel; name: string; items: StatementTransaction[] }>();
+  for (const transaction of transactions) {
+    const channel = recurringChannel(transaction);
+    if (!channel) continue;
+    const name = payeeName(transaction);
+    const key = payeeKey(name);
+    if (!key) continue;
+    const group = groups.get(key);
+    if (group) {
+      group.items.push(transaction);
+      if (channel === 'debit_order') group.channel = channel;
+    } else {
+      groups.set(key, { channel, name, items: [transaction] });
+    }
+  }
+
+  return [...groups.entries()].flatMap(([key, group]) => {
+    const clusters = amountClusters(group.items);
+    return clusters.flatMap((cluster) => {
+      const sorted = [...cluster].sort((a, b) => a.date.localeCompare(b.date));
+      const description = sorted.map((item) => item.descriptionRaw || item.description).join(' ');
+      const category = recurringCategoryFor(description, sorted[0].category);
+      const cadence = cadenceOf(sorted);
+      const amounts = sorted.map((item) => item.amount);
+      const typical = median(amounts);
+      const variation = typical > 0 ? (Math.max(...amounts) - Math.min(...amounts)) / typical : 1;
+      const knownSubscription = SUBSCRIPTIONS.test(description);
+      const single = sorted.length === 1;
+      const regular = cadence !== 'irregular';
+
+      let accept: boolean;
+      if (group.channel === 'debit_order') accept = single || regular;
+      else if (group.channel === 'eft') accept = single ? category === 'housing' : regular && variation <= 0.25;
+      else if (sorted[0].category === 'groceries' || sorted[0].category === 'dining') accept = knownSubscription && regular;
+      else accept = knownSubscription ? single || regular : !single && regular && variation <= 0.02;
+      if (!accept) return [];
+
+      const step = cadence === 'weekly' ? 7 : cadence === 'biweekly' ? 14 : 0;
+      const days = sorted.map((item) => Number(item.date.slice(8, 10)));
+      const billingDay = step ? ((days[0] - 1) % step) + 1 : [...days].sort((a, b) => a - b)[Math.floor(days.length / 2)];
+      return [{
+        key: clusters.length > 1 ? `${key} ${Math.round(typical)}` : key,
+        merchant: group.name,
+        category,
+        channel: group.channel,
+        averageAmount: roundMoney(typical),
+        cadence,
+        occurrences: sorted.length,
+        months: new Set(sorted.map((item) => item.date.slice(0, 7))).size,
+        billingDay,
+        firstDate: sorted[0].date,
+        lastDate: sorted[sorted.length - 1].date,
+        confidence: !single && regular && variation <= 0.1 ? ('high' as const) : ('medium' as const),
+      }];
     });
-    const gap = median(gaps);
-    const cadence = gap >= 5 && gap <= 9 ? 'weekly' : distinctMonths >= 2 && gap >= 24 && gap <= 38 ? 'monthly' : 'irregular';
-    const category = sorted[0].category === 'debt' || sorted[0].category === 'fees' ||
-      sorted[0].category === 'utilities' || sorted[0].category === 'entertainment'
-      ? sorted[0].category
-      : 'other';
-    return [{
-      merchant: sorted[0].merchant,
-      category,
-      averageAmount: roundMoney(sorted.reduce((sum, item) => sum + item.amount, 0) / sorted.length),
-      cadence,
-      occurrences: sorted.length,
-      firstDate: sorted[0].date,
-      lastDate: sorted[sorted.length - 1].date,
-    }];
   });
 }
 
@@ -609,7 +725,7 @@ function analyze(
     insights.push('Outflows cluster near the end of a pay cycle; check the balance available before payday.');
   }
   if (atmWithdrawals + cashBack > 0) insights.push(`Cash usage totalled R${(atmWithdrawals + cashBack).toFixed(2)}: R${atmWithdrawals.toFixed(2)} at ATMs and R${cashBack.toFixed(2)} in cash back.`);
-  if (obligations.some((item) => item.cadence === 'irregular')) insights.push('Review repeated debit orders and subscriptions with irregular timing.');
+  if (obligations.some((item) => item.confidence !== 'high')) insights.push('Some debit orders and repeat payments were seen only once or vary in amount; confirm them before saving.');
   if (anomalies.length) insights.push(`${anomalies.length} transaction pattern${anomalies.length === 1 ? '' : 's'} need review.`);
   if (balanceReconciliation === 'mismatch') insights.push('Statement opening, transaction, and closing balances do not reconcile; review extracted rows.');
   return {
@@ -799,24 +915,80 @@ export function toAppTransactions(document: BankStatementDocument, sourceDocId: 
   }));
 }
 
-export function recurringBillsFromStatement(document: BankStatementDocument) {
-  return document.analysis.recurringObligations
-    .filter((item) => item.cadence !== 'irregular' && (item.category === 'debt' || item.category === 'utilities' || item.category === 'entertainment'))
-    .map((item) => {
-      const matching = document.transactions.filter((transaction) =>
-        transaction.posted && transaction.flow === 'debit' && transaction.merchant.toLowerCase() === item.merchant.toLowerCase(),
-      );
-      const dates = matching.map((transaction) => new Date(`${transaction.date}T00:00:00Z`).getUTCDate()).sort((a, b) => a - b);
-      return {
-        id: `statement-bill-${item.merchant.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-        name: item.merchant,
-        amount: item.cadence === 'weekly' ? roundMoney(item.averageAmount * 52 / 12) : item.averageAmount,
-        day: dates[Math.floor(dates.length / 2)] ?? 1,
-        cadence: item.cadence === 'weekly' ? 'weekly' as const : 'monthly' as const,
-        confidence: item.cadence === 'irregular' ? 'medium' as const : 'high' as const,
-        active: true,
-        isSubscription: item.category === 'entertainment' || matching.some((transaction) => /subscription|netflix|spotify|showmax|dstv|ster-kinekor/i.test(transaction.description)),
-        monthsPaid: new Set(matching.map((transaction) => transaction.date.slice(0, 7))).size,
-      };
-    });
+const PER_MONTH: Record<RecurringFrequency, number> = { monthly: 1, weekly: 52 / 12, biweekly: 26 / 12 };
+
+function slug(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+/** Every recurring payment detected in a statement, as recurring-expense suggestions. */
+export function detectedRecurringExpenses(document: BankStatementDocument): RecurringExpense[] {
+  return document.analysis.recurringObligations.flatMap((item) =>
+    item.cadence === 'irregular'
+      ? []
+      : [{
+          id: `statement-recurring-${slug(item.key)}`,
+          name: item.merchant,
+          amount: item.averageAmount,
+          category: item.category,
+          billingDayOfMonth: item.billingDay,
+          frequency: item.cadence,
+          isEssential: item.category !== 'subscriptions' && item.category !== 'other',
+          source: 'bank_statement' as const,
+          active: true,
+          confidence: item.confidence,
+          monthsPaid: item.months,
+        }],
+  );
+}
+
+function monthlyEquivalent(expense: Pick<RecurringExpense, 'amount' | 'frequency'>): number {
+  return expense.amount * (PER_MONTH[expense.frequency] ?? 1);
+}
+
+/**
+ * True when a detected payment is one the user already has: the same payee name
+ * (one containing the other) at a similar amount, or, for a bill typed in under
+ * another name, the same category with the amount within 5% and the billing day
+ * within 3 days.
+ */
+export function isSameRecurringExpense(candidate: RecurringExpense, saved: RecurringExpense): boolean {
+  if (candidate.id === saved.id) return true;
+  const a = payeeKey(candidate.name);
+  const b = payeeKey(saved.name);
+  const candidateMonthly = monthlyEquivalent(candidate);
+  const savedMonthly = monthlyEquivalent(saved);
+  const sameName = Boolean(a && b) && (a === b || (a.length >= 4 && b.includes(a)) || (b.length >= 4 && a.includes(b)));
+  if (sameName) {
+    // A very different amount from the same payee is a second policy or account.
+    const ratio = savedMonthly > 0 ? candidateMonthly / savedMonthly : 1;
+    return ratio >= 0.5 && ratio <= 2;
+  }
+  const dayGap = Math.abs(candidate.billingDayOfMonth - saved.billingDayOfMonth);
+  return candidate.category === saved.category &&
+    candidate.category !== 'other' &&
+    Math.abs(candidateMonthly - savedMonthly) <= Math.max(1, savedMonthly * 0.05) &&
+    Math.min(dayGap, 31 - dayGap) <= 3;
+}
+
+export type RecurringSuggestionSplit = {
+  fresh: RecurringExpense[];
+  alreadySaved: { suggestion: RecurringExpense; existing: RecurringExpense }[];
+};
+
+/** Separates new suggestions from ones already saved, and drops repeats within the list. */
+export function splitRecurringSuggestions(suggestions: readonly RecurringExpense[], saved: readonly RecurringExpense[]): RecurringSuggestionSplit {
+  const fresh: RecurringExpense[] = [];
+  const alreadySaved: RecurringSuggestionSplit['alreadySaved'] = [];
+  for (const suggestion of suggestions) {
+    const existing = saved.find((item) => isSameRecurringExpense(suggestion, item));
+    if (existing) alreadySaved.push({ suggestion, existing });
+    else if (!fresh.some((item) => isSameRecurringExpense(suggestion, item))) fresh.push(suggestion);
+  }
+  return { fresh, alreadySaved };
+}
+
+/** Recurring payments detected in a statement that the user has not saved yet. */
+export function recurringExpensesFromStatement(document: BankStatementDocument, saved: readonly RecurringExpense[] = []): RecurringExpense[] {
+  return splitRecurringSuggestions(detectedRecurringExpenses(document), saved).fresh;
 }

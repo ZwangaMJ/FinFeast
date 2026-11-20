@@ -10,9 +10,10 @@ Run each file from `supabase/migrations/` in the **SQL Editor**, in filename ord
 
 | File | What it does | Already applied if… |
 |---|---|---|
-| `20261105000000_finfeast_data.sql` | Creates the 15 per-user tables, row-level security and `replace_user_data` | **Table Editor** shows `user_profiles` |
+| `20261105000000_finfeast_data.sql` | Creates the first 15 per-user tables, row-level security and `replace_user_data` | **Table Editor** shows `user_profiles` |
 | `20261110000000_fix_empty_meal_plan_save.sql` | Fixes `replace_user_data` failing for users without a meal plan, which is every new account | Safe to run again (`create or replace`) |
 | `20261117000000_delete_my_account.sql` | Adds `delete_my_account()`, used by **Profile → Delete my account** | Safe to run again (`create or replace`) |
+| `20261120000000_recurring_expenses.sql` | Adds the `recurring_expenses` table (rent, transport, utilities, insurance, subscriptions, debt), copies existing `bills` rows into it, and updates `replace_user_data` to save it. `bills` is no longer written and can be dropped later. | Safe to run again (`if not exists`, `on conflict do nothing`, `create or replace`) |
 
 ## 2. Email sign-in settings
 

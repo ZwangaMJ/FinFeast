@@ -9,12 +9,14 @@ import { Pressable, View } from 'react-native';
 
 import { ReviewFieldCard } from '@/components/cards';
 import { AmountInput, Button, Card, Chip, Icon, Pill, Row, Sheet, Txt, TrustStrip, useCurrency } from '@/components/ui';
+import { splitRecurringSuggestions } from '@/lib/bankStatement';
 import { CATEGORY_LABEL, weeklyFlexible } from '@/lib/budget';
 import { shortDate } from '@/lib/dates';
 import { money } from '@/lib/format';
 import { success } from '@/lib/haptics';
 import { fileHash, parseDocument, ParseError, suggestType, SUPPORTED_TYPES, type ExtractionResult, type UploadInput } from '@/lib/parser';
-import type { Category, DocRecord, DocType } from '@/store/types';
+import { FREQUENCY_SHORT, monthlyAmount, monthlyRecurringTotal, RECURRING_CATEGORIES, RECURRING_CATEGORY_ICON, RECURRING_CATEGORY_LABEL } from '@/lib/recurring';
+import type { Category, DocRecord, DocType, RecurringExpense } from '@/store/types';
 import { uid, useStore, type ReviewEdits } from '@/store/useStore';
 import { useTheme } from '@/theme';
 
@@ -189,7 +191,7 @@ function ProcessingStep({
           r.documentType === 'payslip'
             ? `Net pay ${money(r.income?.net?.value ?? 0, r.payslip?.currency ?? currency)}`
             : r.documentType === 'bank_statement'
-              ? `${r.transactions.length} transactions · ${r.recurringBills.length} bills`
+              ? `${r.transactions.length} transactions · ${r.recurringExpenses.length} recurring payments`
               : r.receipt
                 ? `${r.receipt.merchant} · ${money(r.receipt.total, currency, { decimals: 2 })}`
                 : 'Annual income & retirement';
@@ -274,13 +276,141 @@ function ErrorStep({ step, onRetry, onManual, onDone }: { step: Extract<Step, { 
   );
 }
 
+type RecurringReview = {
+  rejected: string[];
+  edits: NonNullable<ReviewEdits['recurringEdits']>;
+  amountUpdates: Record<string, number>;
+};
+
+/**
+ * Detected debit orders, EFTs and repeat charges for the user to confirm before
+ * import. Ones already saved are listed apart (never added twice); payments seen
+ * only once start unticked.
+ */
+function RecurringReviewCard({ detected, onChange }: { detected: RecurringExpense[]; onChange: (review: RecurringReview) => void }) {
+  const { c } = useTheme();
+  const currency = useCurrency();
+  const fmt = (n: number) => money(n, currency);
+  // Split once, against what was saved when the review opened, so rows don't jump while editing.
+  const [split] = useState(() => splitRecurringSuggestions(detected, useStore.getState().recurringExpenses));
+  const [accepted, setAccepted] = useState<string[]>(() => split.fresh.filter((e) => e.confidence === 'high').map((e) => e.id));
+  const [edits, setEdits] = useState<RecurringReview['edits']>({});
+  const [amountUpdates, setAmountUpdates] = useState<Record<string, number>>({});
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    const rejected = detected.map((e) => e.id).filter((id) => !accepted.includes(id));
+    onChange({ rejected, edits, amountUpdates });
+  }, [accepted, edits, amountUpdates, detected, onChange]);
+
+  const view = (e: RecurringExpense) => ({ ...e, ...(edits[e.id] ?? {}) });
+  const chosen = split.fresh.filter((e) => accepted.includes(e.id)).map(view);
+  const changed = split.alreadySaved.filter(({ suggestion, existing }) => Math.abs(suggestion.amount - existing.amount) >= Math.max(1, existing.amount * 0.01));
+
+  return (
+    <ReviewFieldCard
+      label={`Recurring payments found (${chosen.length} to add)`}
+      value={`${fmt(Math.round(monthlyRecurringTotal(chosen)))}/mo`}
+      confidence={split.fresh.some((e) => e.confidence !== 'high') ? 'medium' : 'high'}>
+      <Txt v="small" muted>
+        Debit orders, EFTs and repeat charges from this statement. Tick the ones that are real bills — tap a row to change its category.
+      </Txt>
+      {split.fresh.map((original) => {
+        const e = view(original);
+        const on = accepted.includes(e.id);
+        const open = expanded === e.id;
+        return (
+          <View key={e.id} style={{ gap: 8, opacity: on ? 1 : 0.6 }}>
+            <Row gap={10}>
+              <Pressable
+                onPress={() => setExpanded(open ? null : e.id)}
+                accessibilityRole="button"
+                accessibilityLabel={`${e.name}, ${RECURRING_CATEGORY_LABEL[e.category]}. ${open ? 'Hide' : 'Change'} category`}
+                style={{ flex: 1, minHeight: 44, justifyContent: 'center' }}>
+                <Txt v="bodyStrong">{e.name}</Txt>
+                <Txt v="caption" muted>
+                  {fmt(e.amount)}/{FREQUENCY_SHORT[e.frequency]} · day {e.billingDayOfMonth} · {RECURRING_CATEGORY_LABEL[e.category]} ·{' '}
+                  {e.confidence === 'high' ? `seen ${e.monthsPaid ?? 2} months` : 'seen once — confirm'}
+                </Txt>
+              </Pressable>
+              <Chip small label={on ? 'Add' : 'Skip'} selected={on} onPress={() => setAccepted((ids) => (on ? ids.filter((id) => id !== e.id) : [...ids, e.id]))} />
+            </Row>
+            {open ? (
+              <View style={{ gap: 8 }}>
+                <Row gap={6} wrap>
+                  {RECURRING_CATEGORIES.map((cat) => (
+                    <Chip
+                      key={cat}
+                      small
+                      label={RECURRING_CATEGORY_LABEL[cat]}
+                      icon={RECURRING_CATEGORY_ICON[cat]}
+                      selected={e.category === cat}
+                      onPress={() => setEdits((all) => ({ ...all, [e.id]: { ...all[e.id], category: cat, isEssential: cat !== 'subscriptions' && cat !== 'other' } }))}
+                    />
+                  ))}
+                </Row>
+                <Chip
+                  small
+                  tone="amber"
+                  label={e.isEssential ? 'Essential (fixed cost)' : 'Optional'}
+                  selected={e.isEssential}
+                  onPress={() => setEdits((all) => ({ ...all, [e.id]: { ...all[e.id], isEssential: !e.isEssential } }))}
+                />
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
+      {split.alreadySaved.length ? (
+        <View style={{ gap: 6, marginTop: 4 }}>
+          <Txt v="smallStrong" muted>
+            Already in your recurring expenses ({split.alreadySaved.length})
+          </Txt>
+          {split.alreadySaved.map(({ suggestion, existing }) => {
+            const differs = changed.some((item) => item.existing.id === existing.id);
+            const updating = amountUpdates[existing.id] !== undefined;
+            return (
+              <Row key={suggestion.id} gap={10}>
+                <View style={{ flex: 1 }}>
+                  <Txt v="small">{existing.name}</Txt>
+                  <Txt v="caption" muted>
+                    {differs ? `Saved as ${fmt(existing.amount)}, this statement shows ${fmt(suggestion.amount)}` : `${fmt(monthlyAmount(existing))}/mo · not added again`}
+                  </Txt>
+                </View>
+                {differs ? (
+                  <Chip
+                    small
+                    label={updating ? `Use ${fmt(suggestion.amount)}` : 'Keep saved'}
+                    selected={updating}
+                    onPress={() =>
+                      setAmountUpdates((all) => {
+                        const next = { ...all };
+                        if (updating) delete next[existing.id];
+                        else next[existing.id] = suggestion.amount;
+                        return next;
+                      })
+                    }
+                  />
+                ) : (
+                  <Txt v="caption" color={c.primary}>
+                    Saved
+                  </Txt>
+                )}
+              </Row>
+            );
+          })}
+        </View>
+      ) : null}
+    </ReviewFieldCard>
+  );
+}
+
 function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: ExtractionResult; onConfirm: (e: ReviewEdits) => void }) {
   const { c } = useTheme();
   const currency = useCurrency();
   const existing = useStore((s) => s.income);
   const fmt = (n: number) => money(n, currency);
   const [net, setNet] = useState(result.income?.net?.value ?? 0);
-  const [rejected, setRejected] = useState<string[]>([]);
   const groceryMonthly = result.variableCategories.food_grocery?.monthly ?? 0;
   const diningMonthly = result.variableCategories.food_dining?.monthly ?? 0;
   const [weeklyFood, setWeeklyFood] = useState(Math.round((groceryMonthly * 12 / 52 + Number.EPSILON) * 100) / 100);
@@ -288,13 +418,11 @@ function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: Extrac
   const [answers, setAnswers] = useState<Record<string, Category>>({});
   const [receiptCat, setReceiptCat] = useState<Category>(result.receipt?.categoryGuess ?? 'food_grocery');
   const [receiptTotal, setReceiptTotal] = useState(result.receipt?.total ?? 0);
-  const [billsOpen, setBillsOpen] = useState(true);
   const [editing, setEditing] = useState<null | { label: string; value: number; set: (n: number) => void }>(null);
   const [draft, setDraft] = useState('');
   const questions = result.transactions.filter((t) => t.question);
 
-  const bills = result.recurringBills;
-  const billTotal = bills.filter((b) => !rejected.includes(b.id)).reduce((a, b) => a + b.amount, 0);
+  const [recurring, setRecurring] = useState<RecurringReview>({ rejected: [], edits: {}, amountUpdates: {} });
   const edit = (label: string, value: number, set: (n: number) => void) => {
     setDraft(String(value));
     setEditing({ label, value, set });
@@ -389,33 +517,7 @@ function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: Extrac
         </Card>
       ) : null}
 
-      {bills.length ? (
-        <ReviewFieldCard label={`Fixed bills detected (${bills.length - rejected.length})`} value={fmt(billTotal)} confidence={bills.some((b) => b.confidence !== 'high') ? 'medium' : 'high'}>
-          <Pressable onPress={() => setBillsOpen((o) => !o)} accessibilityRole="button" style={{ minHeight: 32, justifyContent: 'center' }}>
-            <Txt v="smallStrong" color={c.amber}>
-              {billsOpen ? 'Hide list' : 'Review list'}
-            </Txt>
-          </Pressable>
-          {billsOpen
-            ? bills.map((b) => {
-                const off = rejected.includes(b.id);
-                return (
-                  <Row key={b.id} gap={10} style={{ opacity: off ? 0.5 : 1 }}>
-                    <View style={{ flex: 1 }}>
-                      <Txt v="bodyStrong" style={off ? { textDecorationLine: 'line-through' } : undefined}>
-                        {b.name}
-                      </Txt>
-                      <Txt v="caption" muted>
-                        {fmt(b.amount)} · day {b.day} · {b.confidence === 'high' ? 'seen every month' : 'looks like a subscription'}
-                      </Txt>
-                    </View>
-                    <Chip small label={off ? 'Not a bill' : 'Keep'} selected={!off} onPress={() => setRejected((r) => (off ? r.filter((x) => x !== b.id) : [...r, b.id]))} />
-                  </Row>
-                );
-              })
-            : null}
-        </ReviewFieldCard>
-      ) : null}
+      {result.recurringExpenses.length ? <RecurringReviewCard detected={result.recurringExpenses} onChange={setRecurring} /> : null}
 
       {result.documentType === 'bank_statement' ? (
         <ReviewFieldCard label="Dynamic expenses (food, monthly)" value={fmt(groceryMonthly + diningMonthly)} confidence="medium" onEdit={() => edit('Weekly grocery budget', weeklyFood, setWeeklyFood)}>
@@ -499,7 +601,7 @@ function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: Extrac
         icon="checkmark"
         style={{ marginTop: 8 }}
         disabled={questions.some((q) => !answers[q.id])}
-        onPress={() => onConfirm({ net, rejectedBillIds: rejected, weeklyFood, savingsMonthly: savings, answers, receiptCategory: receiptCat, receiptTotal })}
+        onPress={() => onConfirm({ net, rejectedRecurringIds: recurring.rejected, recurringEdits: recurring.edits, recurringAmountUpdates: recurring.amountUpdates, weeklyFood, savingsMonthly: savings, answers, receiptCategory: receiptCat, receiptTotal })}
       />
       {questions.some((q) => !answers[q.id]) ? (
         <Txt v="caption" muted center>
@@ -530,9 +632,9 @@ function ReviewStep({ doc, result, onConfirm }: { doc: DocRecord; result: Extrac
 
 function DoneStep({ result, onDone, currency }: { result: ExtractionResult; onDone: () => void; currency: Parameters<typeof money>[1] }) {
   const s = useStore();
-  const flex = useMemo(() => weeklyFlexible(s.income, s.bills, s.goals), [s.income, s.bills, s.goals]);
+  const flex = useMemo(() => weeklyFlexible(s.income, s.recurringExpenses, s.goals), [s.income, s.recurringExpenses, s.goals]);
   const sources = result.documentType === 'payslip' ? 'your payslip' : result.documentType === 'bank_statement' ? 'your statement' : 'your document';
-  const needsStatement = result.documentType === 'payslip' && s.bills.length === 0;
+  const needsStatement = result.documentType === 'payslip' && s.recurringExpenses.length === 0;
   return (
     <View style={{ gap: 16, paddingTop: 20 }}>
       <View style={{ alignItems: 'center', gap: 10 }}>
@@ -548,7 +650,7 @@ function DoneStep({ result, onDone, currency }: { result: ExtractionResult; onDo
       </Card>
       {needsStatement ? (
         <Txt v="small" muted center>
-          Add a bank statement next and we’ll subtract your bills automatically.
+          Add a bank statement next and we’ll subtract your recurring bills automatically.
         </Txt>
       ) : null}
       <Button label="See my plan" icon="arrow-forward" onPress={onDone} />

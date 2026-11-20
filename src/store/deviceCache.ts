@@ -3,6 +3,8 @@
 // truth; this copy is removed on sign-out and account deletion.
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { recurringExpensesFromSaved } from '@/lib/recurring';
+
 import { getAppData, initialData, useStore, type AppData } from './useStore';
 
 // Data saved before accounts existed lived under this key.
@@ -22,7 +24,10 @@ function normalizeStoredData(value: unknown): AppData {
 
   const profile = { ...initialData.profile, ...(storedProfile as Partial<AppData['profile']>) };
   const settings = { ...initialData.settings, ...(state.settings as Partial<AppData['settings']> | undefined) };
-  return { ...initialData, ...state, profile, settings } as AppData;
+  // Data saved before recurring expenses existed has a `bills` list instead.
+  const { bills, ...rest } = state;
+  const recurringExpenses = recurringExpensesFromSaved(state.recurringExpenses, bills);
+  return { ...initialData, ...rest, profile, settings, recurringExpenses } as AppData;
 }
 
 async function read(key: string): Promise<AppData | null> {
