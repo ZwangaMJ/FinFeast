@@ -1,9 +1,22 @@
 /**
  * Monthly budget engine (spec §4.3) and predictive analytics (spec §3.3).
- * Income − fixed bills − committed goals = flexible money, split into envelopes.
+ * Income − recurring expenses − committed goals = flexible money, split into envelopes.
+ * The recurring-expense maths lives in the pure `recurring` module.
  */
-import { addDays, daysBetween, daysInMonth, monthStart, parseIso, today, weekStart, weekday } from '@/lib/dates';
-import type { Bill, Category, Goal, Income, MealPlan, Transaction } from '@/store/types';
+import { addDays, daysBetween, daysInMonth, monthStart, parseIso, today, weekStart } from '@/lib/dates';
+import {
+  debitsTotal,
+  essentialRecurringMonthly,
+  flagLowBalanceDays,
+  flexibleMoney,
+  monthlyRecurringTotal,
+  projectMonthBalances,
+  recurringTransactionIds,
+  scheduledDebits,
+  type RiskDay,
+  type ScheduledDebit,
+} from '@/lib/recurring';
+import type { Category, Goal, Income, MealPlan, RecurringExpense, Transaction } from '@/store/types';
 
 export const VARIABLE_CATEGORIES: Category[] = ['food_grocery', 'food_dining', 'transport', 'shopping', 'entertainment', 'health', 'household', 'other'];
 export const FOOD: Category[] = ['food_grocery', 'food_dining'];
@@ -43,28 +56,32 @@ export function monthlyIncome(income: Income | null) {
   return income.net * f;
 }
 
-export function billMonthly(b: Bill) {
-  return b.cadence === 'weekly' ? b.amount * WEEKS_PER_MONTH : b.amount;
-}
-
-export function monthlyBills(bills: Bill[]) {
-  return bills.filter((b) => b.active).reduce((s, b) => s + billMonthly(b), 0);
+/** Active recurring expenses as a monthly amount (weekly and two-weekly converted). */
+export function monthlyRecurring(expenses: RecurringExpense[]) {
+  return monthlyRecurringTotal(expenses);
 }
 
 export function committedGoals(goals: Goal[]) {
   return goals.reduce((s, g) => s + g.monthlyCommitted, 0);
 }
 
-export function flexibleMonthly(income: Income | null, bills: Bill[], goals: Goal[]) {
-  return monthlyIncome(income) - monthlyBills(bills) - committedGoals(goals);
+export function flexibleMonthly(income: Income | null, expenses: RecurringExpense[], goals: Goal[]) {
+  return flexibleMoney(monthlyIncome(income), expenses, committedGoals(goals));
 }
 
-export function weeklyFlexible(income: Income | null, bills: Bill[], goals: Goal[]) {
-  return flexibleMonthly(income, bills, goals) / WEEKS_PER_MONTH;
+export function weeklyFlexible(income: Income | null, expenses: RecurringExpense[], goals: Goal[]) {
+  return flexibleMonthly(income, expenses, goals) / WEEKS_PER_MONTH;
 }
 
 export function spend(tx: Transaction[], start: string, endExclusive: string, cats: Category[] = VARIABLE_CATEGORIES) {
   return tx.filter((t) => t.kind === 'expense' && cats.includes(t.category) && t.date >= start && t.date < endExclusive).reduce((s, t) => s + t.amount, 0);
+}
+
+/** Transactions that are habits, not payments of a saved recurring expense. */
+export function discretionaryTransactions(tx: Transaction[], expenses: RecurringExpense[]) {
+  if (!expenses.length) return tx;
+  const recurring = recurringTransactionIds(expenses, tx);
+  return recurring.size ? tx.filter((t) => !recurring.has(t.id)) : tx;
 }
 
 /** Food spend that counts against a plan: only since the plan existed. */
@@ -98,7 +115,7 @@ export function hasHistory(tx: Transaction[]) {
 
 export type Forecast = {
   income: number;
-  bills: number;
+  bills: number; // recurring debits scheduled this month
   goals: number;
   dynamic: number; // projected variable spend for the month
   spentSoFar: number;
@@ -106,21 +123,26 @@ export type Forecast = {
   band: number;
   points: { day: number; balance: number; actual: boolean }[];
   billMarkers: { day: number; name: string; amount: number }[];
+  debits: ScheduledDebit[];
+  /** Each day of the month with its debits; risky = projected balance below `buffer`. */
+  riskDays: RiskDay[];
+  buffer: number;
 };
 
-export function forecastMonth(income: Income | null, bills: Bill[], goals: Goal[], tx: Transaction[], manualWeeklyFood: number): Forecast {
+export function forecastMonth(income: Income | null, expenses: RecurringExpense[], goals: Goal[], tx: Transaction[], manualWeeklyFood: number): Forecast {
   const t = today();
   const ms = monthStart(t);
   const dim = daysInMonth(t);
   const dayOfMonth = Number(t.slice(8, 10));
   const inc = monthlyIncome(income);
-  const billsTotal = monthlyBills(bills);
   const goalsTotal = committedGoals(goals);
-  const avgs = categoryAverages(tx);
+  // Payments of saved recurring expenses are scheduled below, so keep them out of the habit averages.
+  const habits = discretionaryTransactions(tx, expenses);
+  const avgs = categoryAverages(habits);
   let avgMonthly = VARIABLE_CATEGORIES.reduce((s, c) => s + (avgs[c] ?? 0), 0);
   if (!hasHistory(tx)) avgMonthly = Math.max(avgMonthly, manualWeeklyFood * WEEKS_PER_MONTH * 1.6);
   const avgDaily = avgMonthly / dim;
-  const spentSoFar = spend(tx, ms, addDays(t, 1));
+  const spentSoFar = spend(habits, ms, addDays(t, 1));
   const remainingDays = dim - dayOfMonth;
   const dynamic = spentSoFar + avgDaily * remainingDays;
 
@@ -128,22 +150,27 @@ export function forecastMonth(income: Income | null, bills: Bill[], goals: Goal[
   const weekly: number[] = [];
   for (let w = 1; w <= 8; w++) {
     const s = addDays(weekStart(t), -7 * w);
-    weekly.push(spend(tx, s, addDays(s, 7)));
+    weekly.push(spend(habits, s, addDays(s, 7)));
   }
   const mean = weekly.reduce((a, b) => a + b, 0) / weekly.length;
   const sd = Math.sqrt(weekly.reduce((a, b) => a + (b - mean) ** 2, 0) / weekly.length);
   const band = Math.max(avgMonthly * 0.05, sd * Math.sqrt(Math.max(1, remainingDays / 7)));
 
-  const billMarkers = bills.filter((b) => b.active && b.cadence === 'monthly').map((b) => ({ day: Math.min(b.day, dim), name: b.name, amount: b.amount }));
-  const points: Forecast['points'] = [];
-  let bal = inc - goalsTotal;
-  for (let d = 1; d <= dim; d++) {
-    const date = `${ms.slice(0, 8)}${String(d).padStart(2, '0')}`;
-    billMarkers.filter((b) => b.day === d).forEach((b) => (bal -= b.amount));
-    bills.filter((b) => b.active && b.cadence === 'weekly' && weekday(date) === 1).forEach((b) => (bal -= b.amount));
-    bal -= d <= dayOfMonth ? spend(tx, date, addDays(date, 1)) : avgDaily;
-    points.push({ day: d, balance: bal, actual: d <= dayOfMonth });
-  }
+  const debits = scheduledDebits(expenses, dim);
+  const billsTotal = debitsTotal(debits);
+  const points = projectMonthBalances({
+    daysInMonth: dim,
+    openingBalance: inc - goalsTotal,
+    debits,
+    actualThroughDay: dayOfMonth,
+    spendForDay: (d) => {
+      if (d > dayOfMonth) return avgDaily;
+      const date = `${ms.slice(0, 8)}${String(d).padStart(2, '0')}`;
+      return spend(habits, date, addDays(date, 1));
+    },
+  });
+  // A day is risky when the balance would fall below about a week of usual spending.
+  const buffer = Math.max(0, avgDaily * 7);
   return {
     income: inc,
     bills: billsTotal,
@@ -152,8 +179,11 @@ export function forecastMonth(income: Income | null, bills: Bill[], goals: Goal[
     spentSoFar,
     projectedEnd: inc - billsTotal - goalsTotal - dynamic,
     band,
-    points,
-    billMarkers,
+    points: points.map(({ day, balance, actual }) => ({ day, balance, actual })),
+    billMarkers: debits.map(({ day, name, amount }) => ({ day, name, amount })),
+    debits,
+    riskDays: flagLowBalanceDays(points, debits, buffer, dayOfMonth),
+    buffer,
   };
 }
 
@@ -180,25 +210,26 @@ export function riskyDays(tx: Transaction[], minAmount = 50) {
   }));
 }
 
-export function essentialsMonthly(bills: Bill[], weeklyFood: number) {
-  return monthlyBills(bills.filter((b) => !b.isSubscription)) + weeklyFood * WEEKS_PER_MONTH;
+/** Essential recurring expenses (fixed costs) plus food, per month: what a safety net must cover. */
+export function essentialsMonthly(expenses: RecurringExpense[], weeklyFood: number) {
+  return essentialRecurringMonthly(expenses) + weeklyFood * WEEKS_PER_MONTH;
 }
 
-export function emergencyTarget(bills: Bill[], weeklyFood: number, months = 3) {
-  return Math.ceil((essentialsMonthly(bills, weeklyFood) * months) / 500) * 500;
+export function emergencyTarget(expenses: RecurringExpense[], weeklyFood: number, months = 3) {
+  return Math.ceil((essentialsMonthly(expenses, weeklyFood) * months) / 500) * 500;
 }
 
-export function safetyNetDays(goals: Goal[], bills: Bill[], weeklyFood: number) {
+export function safetyNetDays(goals: Goal[], expenses: RecurringExpense[], weeklyFood: number) {
   const ef = goals.find((g) => g.type === 'emergency');
-  const perDay = essentialsMonthly(bills, weeklyFood) / 30;
+  const perDay = essentialsMonthly(expenses, weeklyFood) / 30;
   if (!ef || perDay <= 0) return 0;
   return Math.floor(ef.current / perDay);
 }
 
 /** 0 = one paycheck from trouble → 100 = 6-month fund + active investments. */
-export function securityMeter(goals: Goal[], bills: Bill[], weeklyFood: number) {
+export function securityMeter(goals: Goal[], expenses: RecurringExpense[], weeklyFood: number) {
   const ef = goals.find((g) => g.type === 'emergency');
-  const essentials = essentialsMonthly(bills, weeklyFood);
+  const essentials = essentialsMonthly(expenses, weeklyFood);
   const months = ef && essentials > 0 ? ef.current / essentials : 0;
   const invest = goals.some((g) => g.type === 'investment' && g.current > 0) ? 15 : 0;
   return { score: Math.round(Math.min(85, (months / 6) * 85) + invest), months };

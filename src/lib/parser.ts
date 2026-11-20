@@ -1,10 +1,10 @@
 /** Payslip and bank statement PDFs are parsed locally. */
-import type { Bill, Category, Confidence, DocType, IncomeFrequency, ReceiptItem, Transaction } from '@/store/types';
+import type { Category, Confidence, DocType, IncomeFrequency, ReceiptItem, RecurringExpense, Transaction } from '@/store/types';
 import {
   BankStatementPdfError,
   parseBankStatementItems,
   parseBankStatementText,
-  recurringBillsFromStatement,
+  detectedRecurringExpenses,
   toAppTransactions,
   type BankStatementDocument,
 } from './bankStatement';
@@ -28,7 +28,8 @@ export type ExtractionResult = {
   bankStatement: BankStatementDocument | null;
   payslip: PayslipDocument | null;
   payslipSummary: PayslipBudgetSummary | null;
-  recurringBills: Bill[];
+  /** Every recurring payment detected; the review step hides ones already saved. */
+  recurringExpenses: RecurringExpense[];
   variableCategories: Partial<Record<Category, { monthly: number; count: number }>>;
   savingsTransfers: { label: string; monthly: number; confidence: Confidence }[];
   transactions: Transaction[];
@@ -108,7 +109,7 @@ export async function parseDocument(input: UploadInput, type: DocType, docId: st
     bankStatement: null,
     payslip: null,
     payslipSummary: null,
-    recurringBills: [],
+    recurringExpenses: [],
     variableCategories: {},
     savingsTransfers: [],
     transactions: [],
@@ -186,7 +187,7 @@ export async function parseDocument(input: UploadInput, type: DocType, docId: st
         deductions: [],
       },
       bankStatement,
-      recurringBills: recurringBillsFromStatement(bankStatement),
+      recurringExpenses: detectedRecurringExpenses(bankStatement),
       variableCategories: {
         food_grocery: categoryMonthly(['food_grocery']),
         food_dining: categoryMonthly(['food_dining']),

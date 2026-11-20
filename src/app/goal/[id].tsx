@@ -103,7 +103,7 @@ export default function GoalDetail() {
         </Card>
         {goal.type === 'emergency' ? (
           <Txt v="caption" muted style={{ marginTop: 6 }}>
-            Target is 3 months of essentials (bills + food). Aim for 6 once you get there.
+            Target is 3 months of essentials (fixed bills + food). Aim for 6 once you get there.
           </Txt>
         ) : null}
         {goal.type === 'investment' ? (

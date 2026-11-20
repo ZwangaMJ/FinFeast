@@ -4,6 +4,7 @@ import { View } from 'react-native';
 
 import { DocumentFlow } from '@/components/DocumentFlow';
 import { MealTile } from '@/components/cards';
+import { RecurringExpenseList } from '@/components/RecurringExpenses';
 import { AmountInput, Button, Card, Chip, Field, Icon, Row, Screen, Stepper, Txt, TrustStrip } from '@/components/ui';
 import { RECIPE_BY_ID } from '@/data/recipes';
 import { weeklyFlexible } from '@/lib/budget';
@@ -195,10 +196,17 @@ function ManualMode({ onDone }: { onDone: () => void }) {
   const ok = parseFloat(income) > 0 && parseFloat(food) > 0;
   return (
     <View style={{ gap: 16 }}>
-      <Txt v="title">Two numbers to start</Txt>
+      <Txt v="title">Your money basics</Txt>
       <Txt muted>Rough is fine — you can add a document later and we’ll sharpen everything.</Txt>
       <AmountInput label="Monthly take-home pay" value={income} onChange={setIncome} autoFocus />
       <AmountInput label="Weekly food budget (groceries)" value={food} onChange={setFood} />
+      <View style={{ gap: 6 }}>
+        <Txt v="h3">Regular bills (optional)</Txt>
+        <Txt v="small" muted>
+          Rent, transport, utilities, insurance, subscriptions and debt repayments come off first, so your flexible money is real.
+        </Txt>
+      </View>
+      <RecurringExpenseList emptyHint="Nothing added yet. You can skip this and add them later in Profile." />
       <Button
         label="Build my plan"
         disabled={!ok}
@@ -224,7 +232,7 @@ function FirstPlan() {
   }, [complete]);
 
   const c = s.profile.currency;
-  const flex = Math.max(0, Math.round(weeklyFlexible(s.income, s.bills, s.goals) / 10) * 10);
+  const flex = Math.max(0, Math.round(weeklyFlexible(s.income, s.recurringExpenses, s.goals) / 10) * 10);
   const ef = s.goals.find((g) => g.type === 'emergency');
   const plan = s.plan;
   const est = plan ? planCost(plan.days, s.profile.householdSize, s.pantry.map((p) => p.key), c) : 0;
@@ -243,7 +251,7 @@ function FirstPlan() {
           Flexible this week
         </Txt>
         <Txt v="hero">{money(flex, c)}</Txt>
-        <Txt muted>After bills and savings — yours to spend well.</Txt>
+        <Txt muted>After recurring bills and savings — yours to spend well.</Txt>
       </Card>
       {plan ? (
         <Card style={{ gap: 10 }}>
