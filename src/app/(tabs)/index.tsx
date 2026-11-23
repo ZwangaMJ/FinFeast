@@ -1,16 +1,18 @@
 import { router } from 'expo-router';
-import { Pressable, View } from 'react-native';
+import { useState } from 'react';
+import { View } from 'react-native';
 
 import { HeroCard, InsightCard, MealCard } from '@/components/cards';
 import { Ring } from '@/components/charts';
-import { Button, Card, Icon, Row, Screen, Section, Txt, useCurrency } from '@/components/ui';
+import { Button, Card, Group, Icon, ListRow, Row, Screen, Section, Touchable, Txt, useCurrency } from '@/components/ui';
 import { useInsights } from '@/hooks/useInsights';
 import { FOOD, riskyDays, safetyNetDays, spend, VARIABLE_CATEGORIES, weeklyFlexible } from '@/lib/budget';
-import { addDays, daysBetween, DAY_LONG, greeting, today, weekStart, weekday } from '@/lib/dates';
+import { addDays, daysBetween, DAY_LONG, greeting, shortDate, today, weekStart, weekday } from '@/lib/dates';
 import { money, PRICE_FACTOR } from '@/lib/format';
+import { success } from '@/lib/haptics';
 import { MEAL_SLOTS } from '@/store/types';
 import { useStore } from '@/store/useStore';
-import { useTheme } from '@/theme';
+import { radius, space, TOUCH, useTheme } from '@/theme';
 
 const SLOT_LABEL = { breakfast: 'Breakfast', lunch: 'Lunch', dinner: 'Dinner' } as const;
 
@@ -40,151 +42,167 @@ export default function Home() {
   const hasFinancialData = !!s.income || s.recurringExpenses.length > 0 || s.transactions.length > 0 || s.weeklyFoodBudget > 0;
   const hasFoodData = s.weeklyFoodBudget > 0 || s.transactions.some((transaction) => FOOD.includes(transaction.category));
   const hasGoalBalance = s.goals.some((goal) => goal.type === 'emergency' && goal.current > 0);
+  const pendingFound = s.foundMoney.filter((f) => f.status === 'pending');
   const name = s.profile.name;
+  const initial = Array.from((name || 'F').trim().normalize('NFC'))[0]?.toLocaleUpperCase() ?? 'F';
+
+  // "At a glance" rows live inside the hero card so the numbers read as one story
+  const glance = [
+    <ListRow
+      key="food"
+      icon="basket"
+      iconTone="amber"
+      title="Food this week"
+      subtitle={
+        est > 0
+          ? foodRatio > 1
+            ? `${fmt(Math.round(foodSpent - est))} past the ${fmt(Math.round(est))} plan`
+            : `${fmt(Math.max(0, Math.round(est - foodSpent)))} left of ${fmt(Math.round(est))}`
+          : hasFoodData
+            ? `${fmt(Math.round(foodSpent))} spent · set a budget to compare`
+            : 'Add a statement or a food budget'
+      }
+      right={
+        est > 0 ? (
+          <Ring value={foodRatio} size={34} stroke={4} tone="green" overTone="amber" accessibilityLabel={`Weekly food budget ${Math.round(foodRatio * 100)}% used`} />
+        ) : undefined
+      }
+      chevron
+      onPress={() => router.navigate(est > 0 ? '/meals' : '/profile')}
+    />,
+    <ListRow
+      key="safety"
+      icon="shield-checkmark"
+      iconTone="blue"
+      title="Safety net"
+      subtitle={hasGoalBalance ? `${safety} day${safety === 1 ? '' : 's'} of essentials covered` : 'Add your savings balance to measure it'}
+      chevron
+      onPress={() => router.navigate('/goals')}
+    />,
+    ...(pendingFound.length
+      ? [
+          <ListRow
+            key="found"
+            icon="sparkles"
+            iconTone="green"
+            title={`${fmt(pendingFound.reduce((a, f) => a + f.amount, 0))} found money waiting`}
+            subtitle="Choose where it goes"
+            chevron
+            onPress={() => router.navigate('/goals')}
+          />,
+        ]
+      : []),
+  ];
 
   return (
     <Screen>
-      <Row style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+      {/* Header: date, large-title greeting, profile */}
+      <Row style={{ justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: space.lg }}>
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Txt v="small" muted>
-            {DAY_LONG[weekday(t)]}
+          <Txt v="label" muted>
+            {DAY_LONG[weekday(t)]} · {shortDate(t)}
           </Txt>
-          <Txt v="title" numberOfLines={3} style={{ flexShrink: 1 }}>
+          <Txt v="title" numberOfLines={2} style={{ flexShrink: 1 }}>
             {greeting()}
             {name ? `, ${name}` : ''}
           </Txt>
         </View>
-        <Pressable onPress={() => router.navigate('/profile')} accessibilityRole="button" accessibilityLabel="Profile" style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 22, backgroundColor: tone('green').bg, alignItems: 'center', justifyContent: 'center' }}>
-          <Txt v="h3" color={tone('green').fg}>
-            {Array.from((name || 'F').trim().normalize('NFC'))[0]?.toLocaleUpperCase() ?? 'F'}
+        <Touchable
+          onPress={() => router.navigate('/profile')}
+          accessibilityLabel="Profile"
+          scaleTo={0.92}
+          style={{ width: TOUCH, height: TOUCH, flexShrink: 0, borderRadius: TOUCH / 2, backgroundColor: tone('purple').bg, alignItems: 'center', justifyContent: 'center' }}>
+          <Txt v="h3" color={tone('purple').fg}>
+            {initial}
           </Txt>
-        </Pressable>
+        </Touchable>
       </Row>
-
-      {/* Safety Net strip */}
-      <Pressable onPress={() => router.navigate('/goals')} accessibilityRole="button" style={{ flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: tone('blue').bg, borderRadius: 999, paddingHorizontal: 14, minHeight: 40, marginBottom: 14 }}>
-        <Icon name="shield-checkmark-outline" size={17} color={tone('blue').fg} />
-        <Txt v="smallStrong" color={tone('blue').fg} style={{ flex: 1 }}>
-          {hasGoalBalance ? `Safety net: ${safety} day${safety === 1 ? '' : 's'} of essentials covered` : 'Add your savings balance to calculate your safety net'}
-        </Txt>
-        <Icon name="chevron-forward" size={16} color={tone('blue').fg} />
-      </Pressable>
-
-      {s.manualMode ? (
-        <Card tone="amber" style={{ marginBottom: 14, gap: 8 }}>
-          <Row gap={8}>
-            <Icon name="sparkles-outline" color={tone('amber').fg} />
-            <Txt v="h3" style={{ flex: 1 }}>
-              Let your budget build itself
-            </Txt>
-          </Row>
-          <Txt v="small" muted>
-            You’re on manual numbers. Add a payslip or statement and we’ll find your bills and real food spend.
-          </Txt>
-          <Button label="Add a document" small tone="amber" variant="tonal" style={{ alignSelf: 'flex-start' }} onPress={() => router.push('/upload')} />
-        </Card>
-      ) : null}
 
       {s.income ? (
         <HeroCard
           label="Flexible this week"
           value={fmt(Math.max(0, Math.round(flexLeft)))}
-          context={flexLeft >= 0 ? `left of ${fmt(Math.round(flexWeek))} · resets in ${resetsIn} day${resetsIn === 1 ? '' : 's'}` : `${fmt(Math.abs(flexLeft))} past this week’s flexible money — next week’s plan can make it back`}
-          cta={{ label: 'See where it goes', onPress: () => router.navigate('/money') }}
-        />
+          context={
+            flexLeft >= 0
+              ? `left of ${fmt(Math.round(flexWeek))} · resets in ${resetsIn} day${resetsIn === 1 ? '' : 's'}`
+              : `${fmt(Math.abs(Math.round(flexLeft)))} past this week’s flexible money — next week’s plan can make it back`
+          }
+          cta={{ label: 'Details', onPress: () => router.navigate('/money') }}
+          meter={
+            flexWeek > 0
+              ? { value: spentWeek / flexWeek, tone: flexLeft >= 0 ? 'green' : 'amber', accessibilityLabel: `${Math.round((spentWeek / flexWeek) * 100)}% of this week’s flexible money spent` }
+              : undefined
+          }>
+          {glance}
+        </HeroCard>
       ) : (
-        <Card style={{ marginBottom: 14, gap: 8 }}>
-          <Txt v="h3">Add your financial data</Txt>
-          <Txt v="small" muted>Upload a text-based payslip or bank statement PDF to see your actual income, bills, and spending here.</Txt>
-          <Button label="Upload a document" small onPress={() => router.push('/upload')} />
-        </Card>
-      )}
-
-      {hasFinancialData && risky?.risky && s.settings.riskAlerts ? (
-        <Card tone="amber" style={{ marginTop: 14, gap: 6 }}>
-          <Txt v="h3">{DAY_LONG[weekday(t)]} takeaway alert</Txt>
-          <Txt v="small" muted>
-            You’ve spent about {fmt(risky.avg)} on {DAY_LONG[weekday(t)]}s lately. Tonight’s dinner is planned — cook it and you keep most of that.
-          </Txt>
-        </Card>
-      ) : null}
-
-      {/* Week food ring + today's meals */}
-      <Section title="This week’s food" action={{ label: 'Plan', onPress: () => router.navigate('/meals') }}>
-        <Card style={{ gap: 14 }}>
-          {s.weeklyFoodBudget > 0 ? (
-            <Row gap={18}>
-              <Ring value={foodRatio} size={112} stroke={11} tone="green" overTone="amber" accessibilityLabel={`Weekly food budget: ${Math.round(foodRatio * 100)}% used, ${fmt(Math.max(0, est - foodSpent))} left`}>
-                <Txt v="h2" tabular>
-                  {Math.round(foodRatio * 100)}%
+        <>
+          <Card style={{ gap: space.sm }}>
+            <Row gap={space.sm} style={{ alignItems: 'flex-start' }}>
+              <View style={{ width: 36, height: 36, borderRadius: radius.sm, backgroundColor: tone('purple').bg, alignItems: 'center', justifyContent: 'center' }}>
+                <Icon name="document-text" size={18} color={tone('purple').fg} />
+              </View>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Txt v="h3">Let your budget build itself</Txt>
+                <Txt v="small" muted>
+                  Add a text-based payslip or bank statement PDF and we’ll find your income, bills and real food spend.
                 </Txt>
-                <Txt v="caption" muted>
-                  used
-                </Txt>
-              </Ring>
-              <View style={{ flex: 1, gap: 4 }}>
-                <Txt v="display" color={foodRatio > 1 ? c.amber : c.text}>
-                  {fmt(Math.abs(Math.round(est - foodSpent)))}
-                </Txt>
-                <Txt muted>{foodRatio > 1 ? 'over the plan so far' : `left of ${fmt(Math.round(est))} planned`}</Txt>
               </View>
             </Row>
-          ) : hasFoodData ? (
-            <View style={{ gap: 8 }}>
-              <Txt v="display">{fmt(Math.round(foodSpent))}</Txt>
-              <Txt muted>Actual food spending this week. Set a food budget to compare it.</Txt>
-              <Button label="Set a food budget" small onPress={() => router.navigate('/profile')} />
-            </View>
-          ) : (
-            <View style={{ gap: 8 }}>
-              <Txt muted>Upload a bank statement or enter a food budget to track real food spending here.</Txt>
-              <Button label="Add a document" small onPress={() => router.push('/upload')} />
-            </View>
-          )}
-        </Card>
-        {todayPlan ? (
-          <View style={{ gap: 10, marginTop: 12 }}>
+            <Button label="Add a document" icon="add" onPress={() => router.push('/upload')} />
+          </Card>
+          <Group style={{ marginTop: space.sm }}>{glance}</Group>
+        </>
+      )}
+
+      {s.manualMode && s.income ? (
+        <Group style={{ marginTop: space.sm }}>
+          <ListRow icon="sparkles-outline" iconTone="purple" title="Using your own numbers" subtitle="Add a statement to replace them with real bills and spending" chevron onPress={() => router.push('/upload')} />
+        </Group>
+      ) : null}
+
+      {hasFinancialData && risky?.risky && s.settings.riskAlerts ? <RiskyDayCallout day={DAY_LONG[weekday(t)]} average={fmt(risky.avg)} /> : null}
+
+      {/* Today's meals as one grouped table */}
+      {todayPlan ? (
+        <Section title="Today’s meals" action={{ label: 'Week', onPress: () => router.navigate('/meals') }}>
+          <Group inset={56}>
             {MEAL_SLOTS.map((slot) => (
               <MealCard key={slot} compact slotLabel={SLOT_LABEL[slot]} meal={todayPlan.slots[slot]} onPress={() => router.push(`/meal/${dayIdx}-${slot}`)} />
             ))}
-          </View>
-        ) : null}
-      </Section>
+            <ListRow icon="add-circle-outline" iconTone="green" title="Add or edit meals" subtitle="Your own meals join the plan" chevron onPress={() => router.push('/recipes')} />
+          </Group>
+        </Section>
+      ) : null}
 
-      {/* Insight of the day */}
       <Section title="Insight of the day" action={insights.length > 1 ? { label: `All ${insights.length}`, onPress: () => router.push('/insights') } : undefined}>
         {insights[0] ? (
           <InsightCard insight={insights[0]} compact />
         ) : (
           <Card>
-            <Txt muted>{hasFinancialData ? 'No insights from your data yet.' : 'Insights will appear when your actual financial data is available.'}</Txt>
+            <Txt v="small" muted>
+              {hasFinancialData ? 'Nothing to change today — you’re on plan.' : 'Insights appear once your real financial data is in.'}
+            </Txt>
           </Card>
         )}
       </Section>
 
-      {showStatementPrompt ? (
-        <Card style={{ marginTop: 14, gap: 8 }} onPress={() => router.push('/upload')} accessibilityLabel="Add this month's statement">
-          <Row gap={10}>
-            <Icon name="reader-outline" color={c.primary} />
-            <Txt v="bodyStrong" style={{ flex: 1 }}>
-              Add this month’s statement to keep your plan sharp
-            </Txt>
-            <Icon name="chevron-forward" size={18} color={c.textFaint} />
-          </Row>
-        </Card>
+      {showStatementPrompt && s.income ? (
+        <Group style={{ marginTop: space.sm }}>
+          <ListRow icon="reader-outline" iconTone="purple" title="Add this month’s statement" subtitle="Keeps your forecast and insights sharp" chevron onPress={() => router.push('/upload')} />
+        </Group>
       ) : null}
 
-      {/* Quick actions */}
       <Section title="Quick actions">
-        <Row gap={10}>
+        <Row gap={space.sm - 2}>
           {[
             { icon: 'receipt-outline', label: 'Add receipt', onPress: () => router.push({ pathname: '/upload', params: { mode: 'receipt' } }) },
             { icon: 'restaurant-outline', label: 'Plan dinner', onPress: () => router.navigate('/meals') },
             { icon: 'swap-vertical-outline', label: 'Move money', onPress: () => router.navigate('/goals') },
           ].map((a) => (
-            <Card key={a.label} onPress={a.onPress} style={{ flex: 1, alignItems: 'center', gap: 8, paddingVertical: 16 }} accessibilityLabel={a.label}>
+            <Card key={a.label} onPress={a.onPress} style={{ flex: 1, alignItems: 'center', gap: space.xs, paddingVertical: space.md, minHeight: 88 }} accessibilityLabel={a.label}>
               <Icon name={a.icon} size={24} color={c.primary} />
-              <Txt v="smallStrong" center>
+              <Txt v="caption" center>
                 {a.label}
               </Txt>
             </Card>
@@ -192,5 +210,51 @@ export default function Home() {
         </Row>
       </Section>
     </Screen>
+  );
+}
+
+/**
+ * Risky-day heads-up. Notifications are offered here — at the moment the user can
+ * see what they'd get — rather than up front in onboarding.
+ */
+function RiskyDayCallout({ day, average }: { day: string; average: string }) {
+  const { tone } = useTheme();
+  const notifications = useStore((s) => s.settings.notifications);
+  const setSettings = useStore((s) => s.setSettings);
+  const [justEnabled, setJustEnabled] = useState(false);
+  return (
+    <Card style={{ marginTop: space.sm, gap: space.sm }}>
+      <Row gap={space.sm} style={{ alignItems: 'flex-start' }}>
+        <View style={{ width: 36, height: 36, borderRadius: radius.sm, backgroundColor: tone('amber').bg, alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name="restaurant" size={18} color={tone('amber').fg} />
+        </View>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Txt v="h3">{day}s tend to run higher</Txt>
+          <Txt v="small" muted>
+            You’ve averaged {average} on eating out on {day}s. Tonight’s dinner is planned — cooking it keeps most of that.
+          </Txt>
+        </View>
+      </Row>
+      {!notifications ? (
+        <Button
+          label={`Remind me on ${day} mornings`}
+          icon="notifications-outline"
+          small
+          variant="secondary"
+          onPress={() => {
+            success();
+            setSettings({ notifications: true, riskAlerts: true });
+            setJustEnabled(true);
+          }}
+        />
+      ) : justEnabled ? (
+        <Row gap={6}>
+          <Icon name="checkmark-circle" size={16} color={tone('green').fg} />
+          <Txt v="caption" color={tone('green').fg}>
+            We’ll send one friendly nudge on mornings like this. Change it anytime in Profile.
+          </Txt>
+        </Row>
+      ) : null}
+    </Card>
   );
 }

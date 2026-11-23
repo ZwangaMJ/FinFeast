@@ -1,4 +1,4 @@
-// Serves the exported web build (dist/) the way GitHub Pages does:
+// Serves an exported web build (dist/, or the folder given as the first argument) the way GitHub Pages does:
 // under the /FinFeast/ base path, with 404.html as the fallback for unknown paths.
 // Used by Playwright (see playwright.config.ts) so tests hit the real build.
 import { createReadStream, existsSync, statSync } from 'node:fs';
@@ -7,7 +7,8 @@ import { extname, join, normalize, sep } from 'node:path';
 
 const BASE = '/FinFeast';
 const PORT = Number(process.env.PORT ?? 3000);
-const dist = join(process.cwd(), 'dist');
+const dir = process.argv[2] ?? 'dist';
+const dist = join(process.cwd(), dir);
 
 const types = {
   '.html': 'text/html; charset=utf-8',
@@ -26,7 +27,7 @@ const types = {
 };
 
 if (!existsSync(join(dist, 'index.html'))) {
-  console.error('dist/index.html not found. Run `npm run export:web` first.');
+  console.error(`${dir}/index.html not found. Run "npm run export:web" first.`);
   process.exit(1);
 }
 
@@ -59,5 +60,5 @@ createServer((req, res) => {
   const fallback = join(dist, '404.html');
   return send(res, 404, existsSync(fallback) ? fallback : join(dist, 'index.html'));
 }).listen(PORT, () => {
-  console.log(`Serving dist/ at http://localhost:${PORT}${BASE}/`);
+  console.log(`Serving ${dir}/ at http://localhost:${PORT}${BASE}/`);
 });

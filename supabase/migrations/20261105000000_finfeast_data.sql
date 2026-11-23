@@ -434,10 +434,17 @@ begin
 
   insert into public.meal_plans (user_id, week_start, is_pending, pending_reason, plan)
   select current_user_id, (item.plan ->> 'weekStart')::date, item.is_pending, item.pending_reason, item.plan
-  from jsonb_to_recordset(jsonb_build_array(
-    case when p_data -> 'plan' is null or p_data -> 'plan' = 'null'::jsonb then null else jsonb_build_object('plan', p_data -> 'plan', 'is_pending', false) end,
-    case when p_data -> 'pendingPlan' is null or p_data -> 'pendingPlan' = 'null'::jsonb then null else jsonb_build_object('plan', p_data -> 'pendingPlan', 'is_pending', true, 'pending_reason', p_data ->> 'pendingReason') end
-  )) as item(plan jsonb, is_pending boolean, pending_reason text)
+  from jsonb_to_recordset(
+    (case when p_data -> 'plan' is null or p_data -> 'plan' = 'null'::jsonb
+      then '[]'::jsonb
+      else jsonb_build_array(jsonb_build_object('plan', p_data -> 'plan', 'is_pending', false))
+    end)
+    ||
+    (case when p_data -> 'pendingPlan' is null or p_data -> 'pendingPlan' = 'null'::jsonb
+      then '[]'::jsonb
+      else jsonb_build_array(jsonb_build_object('plan', p_data -> 'pendingPlan', 'is_pending', true, 'pending_reason', p_data ->> 'pendingReason'))
+    end)
+  ) as item(plan jsonb, is_pending boolean, pending_reason text)
   where item.plan is not null
   on conflict (user_id, week_start, is_pending) do update set
     pending_reason = excluded.pending_reason, plan = excluded.plan;
@@ -446,10 +453,17 @@ begin
   where existing.user_id = current_user_id
     and not exists (
       select 1
-      from jsonb_to_recordset(jsonb_build_array(
-        case when p_data -> 'plan' is null or p_data -> 'plan' = 'null'::jsonb then null else jsonb_build_object('week_start', p_data #>> '{plan,weekStart}', 'is_pending', false) end,
-        case when p_data -> 'pendingPlan' is null or p_data -> 'pendingPlan' = 'null'::jsonb then null else jsonb_build_object('week_start', p_data #>> '{pendingPlan,weekStart}', 'is_pending', true) end
-      )) as item(week_start date, is_pending boolean)
+      from jsonb_to_recordset(
+        (case when p_data -> 'plan' is null or p_data -> 'plan' = 'null'::jsonb
+          then '[]'::jsonb
+          else jsonb_build_array(jsonb_build_object('week_start', p_data #>> '{plan,weekStart}', 'is_pending', false))
+        end)
+        ||
+        (case when p_data -> 'pendingPlan' is null or p_data -> 'pendingPlan' = 'null'::jsonb
+          then '[]'::jsonb
+          else jsonb_build_array(jsonb_build_object('week_start', p_data #>> '{pendingPlan,weekStart}', 'is_pending', true))
+        end)
+      ) as item(week_start date, is_pending boolean)
       where item.week_start = existing.week_start and item.is_pending = existing.is_pending
     );
 

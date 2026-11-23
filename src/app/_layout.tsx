@@ -93,6 +93,8 @@ export default function RootLayout() {
                 {/* Every other route is declared here too, or it would be reachable while signed out. */}
                 <Stack.Screen name="goal/[id]" />
                 <Stack.Screen name="meal/[id]" />
+                <Stack.Screen name="recipes" />
+                <Stack.Screen name="recipe/[id]" />
                 <Stack.Screen name="grocery" />
                 <Stack.Screen name="pantry" />
                 <Stack.Screen name="insights" />

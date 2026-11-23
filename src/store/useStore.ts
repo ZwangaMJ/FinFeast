@@ -1,59 +1,39 @@
+/**
+ * The imperative shell: zustand state plus thin actions. Each action reads the
+ * outside world once (`systemEnv()`), calls pure engines/rules, and `set`s the result.
+ */
 import { create } from 'zustand';
 
 import { RECIPES } from '@/data/recipes';
 import { splitRecurringSuggestions } from '@/lib/bankStatement';
-import { emergencyTarget, flexibleMonthly, planCoverage, planWeekFoodSpend, spend } from '@/lib/budget';
-import { addDays, daysBetween, monthName, monthStart, today, weekStart } from '@/lib/dates';
+import { setUserMeals } from '@/lib/catalog';
+import { monthStart, weekStart } from '@/lib/dates';
+import { scopeEnv } from '@/lib/env';
 import { money } from '@/lib/format';
 import type { Insight } from '@/lib/insights';
-import { allSwapKeys, generatePlan, planCost, regenerateDay, regenerateSlot, relinkBatches, type PlannerInput } from '@/lib/mealPlanner';
+import { planOrFallback, regenerateDay, regenerateSlot, relinkBatches, withAllSwaps } from '@/lib/mealPlanner';
 import type { ExtractionResult } from '@/lib/parser';
 import { monthlyAmount } from '@/lib/recurring';
 import {
-  MEAL_SLOTS,
-  type Category,
-  type DocRecord,
-  type FoundMoney,
-  type Goal,
-  type Income,
-  type MealPlan,
-  type MealSlot,
-  type PantryItem,
-  type Profile,
-  type RecurringExpense,
-  type Rule,
-  type Settings,
-  type Transaction,
-  type WeekRecord,
-} from './types';
+  addFoundMoney,
+  allocateFoundMoney,
+  applyRoundUps,
+  creditGoal,
+  deleteGoal,
+  ensureEmergencyGoal,
+  plannerBase,
+  planDayIndex,
+  planWeek,
+  syncTime as runTimeRules,
+  type FoundMoneyInput,
+} from './rules';
+import * as food from './food';
+import type { GroceryInput, MealInput } from './food';
+import { systemEnv, uid } from './systemEnv';
+import { MEAL_SLOTS, type AppData, type Category, type DocRecord, type FoodImageRef, type FoundMoney, type Goal, type MealPlan, type MealSlot, type Profile, type RecurringExpense, type Rule, type Settings, type Transaction } from './types';
 
-export const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
-
-export type AppData = {
-  onboarded: boolean;
-  profile: Profile;
-  settings: Settings;
-  manualMode: boolean;
-  income: Income | null;
-  weeklyFoodBudget: number;
-  recurringExpenses: RecurringExpense[];
-  transactions: Transaction[];
-  documents: DocRecord[];
-  plan: MealPlan | null;
-  pendingPlan: MealPlan | null;
-  pendingReason: string | null;
-  pantry: PantryItem[];
-  groceryChecked: string[];
-  tried: string[];
-  goals: Goal[];
-  foundMoney: FoundMoney[];
-  weekHistory: WeekRecord[];
-  dismissedInsights: string[];
-  assignedWeeks: string[];
-  lastMonthProcessed: string | null;
-  lastPaydayProcessed: string | null;
-  taxInfo: { annualIncome: number; retirement: number } | null;
-};
+export { uid };
+export type { AppData };
 
 export type ReviewEdits = {
   net?: number;
@@ -96,6 +76,21 @@ type Actions = {
   togglePantry: (key: string) => void;
   toggleGrocery: (id: string) => void;
   clearGroceryChecks: () => void;
+
+  /** Creates a custom meal; returns its recipe id. */
+  createMeal: (input: MealInput) => string;
+  /** Edits a custom meal or saves the user's copy of a built-in. Returns false if the recipe doesn't exist. */
+  updateRecipe: (recipeId: string, input: MealInput) => boolean;
+  /** Deletes a custom meal or hides a built-in, replacing it wherever it is planned. */
+  deleteRecipe: (recipeId: string) => void;
+  /** Reverts a built-in to the original (drops the user's edits or un-hides it). */
+  restoreRecipe: (recipeId: string) => void;
+  setMealImage: (mealId: string, image: FoodImageRef | null) => void;
+  createGroceryItem: (input: GroceryInput) => string;
+  updateGroceryItem: (id: string, patch: Partial<GroceryInput>) => void;
+  deleteGroceryItem: (id: string) => void;
+  toggleGroceryItem: (id: string) => void;
+  setGroceryImage: (id: string, image: FoodImageRef | null) => void;
 
   addGoal: (g: Omit<Goal, 'id' | 'contributions' | 'createdAt' | 'current'> & { current?: number }) => string;
   updateGoal: (id: string, g: Partial<Goal>) => void;
@@ -146,6 +141,8 @@ export const initialData: AppData = {
   pendingReason: null,
   pantry: [],
   groceryChecked: [],
+  meals: [],
+  groceries: [],
   tried: RECIPES.filter((r) => r.classic).map((r) => r.id),
   goals: [],
   foundMoney: [],
@@ -157,88 +154,10 @@ export const initialData: AppData = {
   taxInfo: null,
 };
 
-function plannerInput(s: AppData, mode: MealPlan['mode'] = 'normal'): Omit<PlannerInput, 'weekStart' | 'seed'> {
-  return {
-    profile: s.profile,
-    ceiling: s.weeklyFoodBudget,
-    pantry: s.pantry.map((p) => p.key),
-    tried: s.tried,
-    mode,
-  };
-}
-
-const FOOD_CATS: Category[] = ['food_grocery', 'food_dining'];
-
 export const useStore = create<AppData & Actions>()((set, get) => {
-      /** Route found money through the user's opt-in rules; unruled money waits in the inbox. */
-      const routeFoundMoney = (fm: FoundMoney, goals: Goal[]): { fm: FoundMoney[]; goals: Goal[] } => {
-        const date = today();
-        const credit = (gs: Goal[], goalId: string, amount: number, source: string) =>
-          gs.map((g) => (g.id === goalId ? { ...g, current: g.current + amount, contributions: [{ id: uid(), date, amount, source }, ...g.contributions] } : g));
-
-        if (fm.kind === 'grocery_underspend') {
-          const target = goals.find((g) => g.rules.some((r) => r.kind === 'meal_surplus' && r.enabled));
-          if (target) {
-            return {
-              fm: [{ ...fm, status: 'allocated', auto: true, allocations: [{ goalId: target.id, amount: fm.amount }] }],
-              goals: credit(goals, target.id, fm.amount, 'Meal-plan surplus sweep'),
-            };
-          }
-        }
-        const pct = goals.flatMap((g) => g.rules.filter((r) => r.kind === 'percent' && r.enabled && r.percent).map((r) => ({ goalId: g.id, percent: r.percent! })));
-        if (pct.length) {
-          const total = Math.min(100, pct.reduce((a, p) => a + p.percent, 0));
-          let gs = goals;
-          const allocations = pct.map((p) => ({ goalId: p.goalId, amount: Math.round((fm.amount * p.percent) / 100) }));
-          allocations.forEach((a) => (gs = credit(gs, a.goalId, a.amount, 'Found Money split rule')));
-          const out: FoundMoney[] = [{ ...fm, amount: allocations.reduce((a, b) => a + b.amount, 0), status: 'allocated', auto: true, allocations }];
-          const rest = Math.round(fm.amount * (1 - total / 100));
-          if (rest > 0) out.push({ ...fm, id: uid(), amount: rest, headline: `${fm.headline} (remainder)` });
-          return { fm: out, goals: gs };
-        }
-        return { fm: [fm], goals };
-      };
-
-      const roundUps = (txs: Transaction[], goals: Goal[]) => {
-        let gs = goals;
-        goals.forEach((g) =>
-          g.rules
-            .filter((r) => r.kind === 'roundup' && r.enabled)
-            .forEach((r) => {
-              const step = r.amount || 10;
-              const total = txs.filter((t) => t.kind === 'expense' && FOOD_CATS.includes(t.category)).reduce((a, t) => a + (Math.ceil(t.amount / step) * step - t.amount), 0);
-              if (total > 0) {
-                const amt = Math.round(total * 100) / 100;
-                gs = gs.map((x) => (x.id === g.id ? { ...x, current: x.current + amt, contributions: [{ id: uid(), date: today(), amount: amt, source: 'Food round-ups' }, ...x.contributions] } : x));
-              }
-            }),
-        );
-        return gs;
-      };
-
-      const ensureEmergency = (s: AppData): Goal[] => {
-        const target = emergencyTarget(s.recurringExpenses, s.weeklyFoodBudget);
-        const existing = s.goals.find((g) => g.type === 'emergency');
-        if (target <= 0) return s.goals;
-        if (existing) {
-          return s.goals.map((g) => (g.id === existing.id && g.contributions.length === 0 && g.current === 0 ? { ...g, target } : g));
-        }
-        return [
-          {
-            id: uid(),
-            type: 'emergency',
-            name: 'Emergency Fund',
-            target,
-            current: 0,
-            deadline: null,
-            monthlyCommitted: 0,
-            rules: [{ id: uid(), kind: 'meal_surplus', enabled: true }],
-            contributions: [],
-            createdAt: today(),
-          },
-          ...s.goals,
-        ];
-      };
+      const data = (): AppData => getAppData(get());
+      const ensureEmergency = (s: Pick<AppData, 'recurringExpenses' | 'weeklyFoodBudget' | 'goals'>) => ensureEmergencyGoal(s, systemEnv());
+      const foundMoney = (input: FoundMoneyInput) => set((s) => addFoundMoney(s, input, systemEnv()));
 
       return {
         ...initialData,
@@ -251,7 +170,8 @@ export const useStore = create<AppData & Actions>()((set, get) => {
         setSettings: (st) => set((s) => ({ settings: { ...s.settings, ...st } })),
 
         completeOnboarding: () => {
-          set((s) => ({ onboarded: true, goals: ensureEmergency(s), lastMonthProcessed: monthStart(), lastPaydayProcessed: monthStart() }));
+          const month = monthStart(systemEnv().today);
+          set((s) => ({ onboarded: true, goals: ensureEmergency(s), lastMonthProcessed: month, lastPaydayProcessed: month }));
           get().ensurePlan();
         },
 
@@ -326,7 +246,7 @@ export const useStore = create<AppData & Actions>()((set, get) => {
               lineItems: r.receipt.lineItems,
             };
             next.transactions = [t, ...s.transactions];
-            next.goals = roundUps([t], s.goals);
+            next.goals = applyRoundUps([t], s.goals, systemEnv());
           }
           if (r.taxForm) next.taxInfo = r.taxForm;
           set(next);
@@ -345,31 +265,34 @@ export const useStore = create<AppData & Actions>()((set, get) => {
 
         addManualTransaction: (t) => {
           const tx: Transaction = { ...t, id: uid(), confidence: 'high' };
-          set((s) => ({ transactions: [tx, ...s.transactions].sort((a, b) => b.date.localeCompare(a.date)), goals: roundUps([tx], s.goals) }));
+          const env = systemEnv();
+          set((s) => ({ transactions: [tx, ...s.transactions].sort((a, b) => b.date.localeCompare(a.date)), goals: applyRoundUps([tx], s.goals, env) }));
         },
 
         ensurePlan: () => {
-          const s = get();
-          if (!s.plan) {
-            set({ plan: generatePlan({ ...plannerInput(s), weekStart: weekStart(), seed: Date.now() % 100000 }), groceryChecked: [] });
-          }
+          const s = data();
+          if (!s.plan) set({ plan: planWeek(s, systemEnv()), groceryChecked: [] });
         },
 
         regenerateWeek: (mode = 'normal') => {
-          const s = get();
-          set({ plan: generatePlan({ ...plannerInput(s, mode), weekStart: s.plan?.weekStart ?? weekStart(), seed: Date.now() % 100000 }), groceryChecked: [], pendingPlan: null, pendingReason: null });
+          const s = data();
+          set({ plan: planWeek(s, systemEnv(), { mode, weekStart: s.plan?.weekStart }) ?? s.plan, groceryChecked: [], pendingPlan: null, pendingReason: null });
         },
 
         regenerateMeal: (day, slot) => {
-          const s = get();
+          const s = data();
           if (!s.plan) return;
-          set({ plan: regenerateSlot(s.plan, plannerInput(s, s.plan.mode), day, slot) });
+          const env = systemEnv();
+          const next = planOrFallback(regenerateSlot(s.plan, plannerBase(s, s.plan.mode), day, slot, { seed: env.seed, generatedAt: env.now }));
+          if (next) set({ plan: next });
         },
 
         regenerateDay: (day) => {
-          const s = get();
+          const s = data();
           if (!s.plan) return;
-          set({ plan: regenerateDay(s.plan, plannerInput(s, s.plan.mode), day) });
+          const env = systemEnv();
+          const next = planOrFallback(regenerateDay(s.plan, plannerBase(s, s.plan.mode), day, { seed: env.seed, generatedAt: env.now }));
+          if (next) set({ plan: next });
         },
 
         toggleSwap: (day, slot, key) => {
@@ -387,25 +310,14 @@ export const useStore = create<AppData & Actions>()((set, get) => {
 
         applyAllSwaps: () => {
           const s = get();
-          if (!s.plan) return;
-          const days = s.plan.days.map((d) => ({
-            ...d,
-            slots: Object.fromEntries(MEAL_SLOTS.map((slot) => [slot, { ...d.slots[slot], swaps: allSwapKeys(d.slots[slot].recipeId) }])) as typeof d.slots,
-          }));
-          set({ plan: { ...s.plan, days } });
+          if (s.plan) set({ plan: withAllSwaps(s.plan) });
         },
 
         proposeLighterPlan: (reason) => {
-          const s = get();
+          const s = data();
           if (!s.plan) return;
-          const todayIdx = Math.max(0, Math.min(7, daysBetween(s.plan.weekStart, today())));
-          const plan = s.plan;
-          const proposed = generatePlan({
-            ...plannerInput(s, 'budget_light'),
-            weekStart: plan.weekStart,
-            seed: plan.seed + 13,
-            locked: (d, slot) => (d < todayIdx ? plan.days[d].slots[slot] : undefined),
-          });
+          const env = systemEnv();
+          const proposed = planWeek(s, env, { mode: 'budget_light', weekStart: s.plan.weekStart, lockedFrom: s.plan, lockBeforeDay: planDayIndex(s.plan, env) });
           set({ pendingPlan: proposed, pendingReason: reason });
         },
         acceptPendingPlan: () => set((s) => ({ plan: s.pendingPlan ?? s.plan, pendingPlan: null, pendingReason: null, groceryChecked: [] })),
@@ -419,37 +331,68 @@ export const useStore = create<AppData & Actions>()((set, get) => {
           set({ plan: { ...s.plan, days: relinkBatches(days) }, tried: cooked && !s.tried.includes(rid) ? [...s.tried, rid] : s.tried });
         },
 
-        togglePantry: (key) =>
-          set((s) => ({ pantry: s.pantry.some((p) => p.key === key) ? s.pantry.filter((p) => p.key !== key) : [...s.pantry, { key, addedAt: today() }] })),
+        togglePantry: (key) => {
+          const addedAt = systemEnv().today;
+          set((s) => ({ pantry: s.pantry.some((p) => p.key === key) ? s.pantry.filter((p) => p.key !== key) : [...s.pantry, { key, addedAt }] }));
+        },
         toggleGrocery: (id) => set((s) => ({ groceryChecked: s.groceryChecked.includes(id) ? s.groceryChecked.filter((x) => x !== id) : [...s.groceryChecked, id] })),
-        clearGroceryChecks: () => set({ groceryChecked: [] }),
+        clearGroceryChecks: () => set((s) => ({ groceryChecked: [], groceries: s.groceries.some((g) => g.checked) ? s.groceries.map((g) => (g.checked ? { ...g, checked: false } : g)) : s.groceries })),
+
+        createMeal: (input) => {
+          const { meals, recipeId } = food.createMeal(get().meals, input, systemEnv());
+          set({ meals });
+          return recipeId;
+        },
+        updateRecipe: (recipeId, input) => {
+          const result = food.editRecipe(get().meals, recipeId, input, systemEnv());
+          if (!result) return false;
+          set({ meals: result.meals });
+          return true;
+        },
+        deleteRecipe: (recipeId) => {
+          const env = systemEnv();
+          const s0 = get();
+          set({ meals: food.deleteRecipe(s0.meals, recipeId, env, s0.profile.currency), groceries: food.dropMealGroceries(s0.groceries, recipeId) });
+          // The registry now excludes the recipe; replace it wherever it is planned.
+          const s = data();
+          if (!s.plan) return;
+          let plan: MealPlan = { ...s.plan, days: s.plan.days.map((d) => ({ ...d, snacks: d.snacks.filter((id) => id !== recipeId) })) };
+          const base = plannerBase(s, s.plan.mode);
+          s.plan.days.forEach((d, day) =>
+            MEAL_SLOTS.forEach((slot) => {
+              if (d.slots[slot].recipeId === recipeId) plan = planOrFallback(regenerateSlot(plan, base, day, slot, { seed: env.seed + day, generatedAt: env.now })) ?? plan;
+            }),
+          );
+          set({ plan });
+        },
+        restoreRecipe: (recipeId) => set((s) => ({ meals: food.restoreBuiltIn(s.meals, recipeId) })),
+        setMealImage: (mealId, image) => set((s) => ({ meals: food.setMealImage(s.meals, mealId, image, systemEnv()) })),
+
+        createGroceryItem: (input) => {
+          const { groceries, item } = food.createGroceryItem(get().groceries, input, systemEnv());
+          set({ groceries });
+          return item.id;
+        },
+        updateGroceryItem: (id, patch) => set((s) => ({ groceries: food.updateGroceryItem(s.groceries, id, patch, systemEnv()) })),
+        deleteGroceryItem: (id) => set((s) => ({ groceries: food.deleteGroceryItem(s.groceries, id) })),
+        toggleGroceryItem: (id) => set((s) => ({ groceries: food.toggleGroceryItem(s.groceries, id, systemEnv()) })),
+        setGroceryImage: (id, image) => set((s) => ({ groceries: food.setGroceryImage(s.groceries, id, image, systemEnv()) })),
 
         addGoal: (g) => {
           const id = uid();
-          set((s) => ({ goals: [...s.goals, { ...g, current: g.current ?? 0, id, contributions: [], createdAt: today() }] }));
+          const createdAt = systemEnv().today;
+          set((s) => ({ goals: [...s.goals, { ...g, current: g.current ?? 0, id, contributions: [], createdAt }] }));
           return id;
         },
         updateGoal: (id, g) => set((s) => ({ goals: s.goals.map((x) => (x.id === id ? { ...x, ...g } : x)) })),
-        deleteGoal: (id) =>
-          set((s) => {
-            const foundMoney = s.foundMoney.flatMap((item) => {
-              const removedAllocations = item.allocations?.filter((allocation) => allocation.goalId === id) ?? [];
-              if (!removedAllocations.length) return [item];
-              const returned = removedAllocations.reduce((total, allocation) => total + allocation.amount, 0);
-              const remaining = item.allocations?.filter((allocation) => allocation.goalId !== id) ?? [];
-              const updated = remaining.length
-                ? { ...item, amount: remaining.reduce((total, allocation) => total + allocation.amount, 0), allocations: remaining }
-                : { ...item, status: 'pending' as const, allocations: undefined };
-              return remaining.length
-                ? [updated, { ...item, id: uid(), amount: returned, status: 'pending' as const, allocations: undefined, auto: false, headline: `${item.headline} (returned)` }]
-                : [updated];
-            });
-            return { goals: s.goals.filter((goal) => goal.id !== id), foundMoney };
-          }),
-        contribute: (goalId, amount, source) =>
-          set((s) => ({
-            goals: s.goals.map((g) => (g.id === goalId ? { ...g, current: Math.max(0, g.current + amount), contributions: [{ id: uid(), date: today(), amount, source }, ...g.contributions] } : g)),
-          })),
+        deleteGoal: (id) => {
+          const env = systemEnv();
+          set((s) => deleteGoal(s, id, env));
+        },
+        contribute: (goalId, amount, source) => {
+          const env = systemEnv();
+          set((s) => ({ goals: creditGoal(s.goals, goalId, amount, source, env) }));
+        },
         upsertRule: (goalId, rule) =>
           set((s) => ({
             goals: s.goals.map((g) => {
@@ -461,28 +404,10 @@ export const useStore = create<AppData & Actions>()((set, get) => {
           })),
         removeRule: (goalId, ruleId) => set((s) => ({ goals: s.goals.map((g) => (g.id === goalId ? { ...g, rules: g.rules.filter((r) => r.id !== ruleId) } : g)) })),
 
-        addFoundMoney: (input) => {
-          const s = get();
-          const fm: FoundMoney = { ...input, id: uid(), createdAt: today(), status: 'pending' };
-          const routed = routeFoundMoney(fm, s.goals);
-          set({ foundMoney: [...routed.fm, ...s.foundMoney], goals: routed.goals });
-        },
+        addFoundMoney: foundMoney,
         allocateFoundMoney: (id, allocations) => {
-          const s = get();
-          const fm = s.foundMoney.find((f) => f.id === id);
-          if (!fm) return;
-          let goals = s.goals;
-          allocations.forEach((a) => {
-            goals = goals.map((g) => (g.id === a.goalId ? { ...g, current: g.current + a.amount, contributions: [{ id: uid(), date: today(), amount: a.amount, source: fm.headline }, ...g.contributions] } : g));
-          });
-          const allocated = allocations.reduce((a, b) => a + b.amount, 0);
-          const rest = Math.round((fm.amount - allocated) * 100) / 100;
-          set({
-            goals,
-            foundMoney: s.foundMoney.map((f): FoundMoney => (f.id === id ? { ...f, status: allocated > 0 ? 'allocated' : 'kept', allocations, amount: allocated > 0 ? allocated : f.amount } : f)).concat(
-              rest > 0 && allocated > 0 ? [{ ...fm, id: uid(), amount: rest, status: 'kept', headline: `${fm.headline} (kept for spending)` }] : [],
-            ),
-          });
+          const env = systemEnv();
+          set((s) => allocateFoundMoney(s, id, allocations, env));
         },
         keepFoundMoney: (id) => set((s) => ({ foundMoney: s.foundMoney.map((f) => (f.id === id ? { ...f, status: 'kept' } : f)) })),
 
@@ -510,7 +435,7 @@ export const useStore = create<AppData & Actions>()((set, get) => {
           if (!expense || !expense.active) return;
           set({ recurringExpenses: s.recurringExpenses.map((e) => (e.id === id ? { ...e, active: false } : e)) });
           const monthly = Math.round(monthlyAmount(expense) * 100) / 100;
-          get().addFoundMoney({
+          foundMoney({
             amount: monthly,
             headline: `${money(monthly, s.profile.currency)}/mo freed from ${expense.name}`,
             source: `You cancelled ${expense.name} — that's ${money(monthly * 12, s.profile.currency)} a year back.`,
@@ -525,8 +450,9 @@ export const useStore = create<AppData & Actions>()((set, get) => {
           if (i.action.kind === 'swap') get().applyAllSwaps();
           if (i.action.kind === 'assign' && i.action.amount) {
             const s = get();
-            set({ assignedWeeks: [...s.assignedWeeks, weekStart()] });
-            get().addFoundMoney({
+            const week = weekStart(systemEnv().today);
+            set({ assignedWeeks: [...s.assignedWeeks, week] });
+            foundMoney({
               amount: i.action.amount,
               headline: `${money(i.action.amount, s.profile.currency)} ready to assign`,
               source: 'Flexible money with no job yet this week.',
@@ -538,67 +464,9 @@ export const useStore = create<AppData & Actions>()((set, get) => {
 
         /** Week rollover (plan vs actual → Found Money or lighter plan) and payday/month rules. */
         syncTime: () => {
-          const s = get();
-          if (!s.onboarded) return;
-          const ws = weekStart();
-          const c = s.profile.currency;
-          if (s.plan && s.plan.weekStart < ws) {
-            const estimate = planCost(s.plan.days, s.profile.householdSize, s.pantry.map((p) => p.key), c) * planCoverage(s.plan);
-            const actual = planWeekFoodSpend(s.transactions, s.plan);
-            set({ weekHistory: [...s.weekHistory.filter((w) => w.weekStart !== s.plan!.weekStart), { weekStart: s.plan.weekStart, estimate, actual }] });
-            let mode: MealPlan['mode'] = 'normal';
-            if (actual > 0 && actual <= estimate) {
-              const saved = Math.round(estimate - actual);
-              if (saved > 0)
-                get().addFoundMoney({
-                  amount: saved,
-                  headline: `You saved ${money(saved, c)} on food last week`,
-                  source: `Groceries and eating out came in ${money(saved, c)} under your plan.`,
-                  kind: 'grocery_underspend',
-                });
-            } else if (actual > estimate * 1.1) {
-              mode = 'budget_light';
-            }
-            set({ plan: generatePlan({ ...plannerInput(get(), mode), weekStart: ws, seed: Date.now() % 100000 }), groceryChecked: [] });
-          } else if (!s.plan) {
-            get().ensurePlan();
-          }
-
-          // Payday fixed sweeps
-          const st = get();
-          const payday = st.income?.payday ?? 25;
-          const thisPayday = `${today().slice(0, 8)}${String(payday).padStart(2, '0')}`;
-          if (today() >= thisPayday && (st.lastPaydayProcessed ?? '') < thisPayday) {
-            let goals = st.goals;
-            goals.forEach((g) =>
-              g.rules
-                .filter((r) => r.kind === 'fixed' && r.enabled && r.amount)
-                .forEach((r) => {
-                  goals = goals.map((x) => (x.id === g.id ? { ...x, current: x.current + r.amount!, contributions: [{ id: uid(), date: today(), amount: r.amount!, source: 'Payday sweep' }, ...x.contributions] } : x));
-                }),
-            );
-            set({ goals, lastPaydayProcessed: thisPayday });
-          }
-
-          // Month-end threshold trigger ("ask me")
-          const ms = monthStart();
-          if ((st.lastMonthProcessed ?? ms) < ms) {
-            const prevStart = monthStart(addDays(ms, -1));
-            const unallocated = flexibleMonthly(st.income, st.recurringExpenses, st.goals) - spend(st.transactions, prevStart, ms);
-            st.goals.forEach((g) =>
-              g.rules
-                .filter((r) => r.kind === 'threshold' && r.enabled && r.amount && unallocated > r.amount)
-                .forEach(() =>
-                  get().addFoundMoney({
-                    amount: Math.round(unallocated),
-                    headline: `${monthName(prevStart)} ended with ${money(unallocated, c)} unassigned`,
-                    source: 'Your threshold rule asked us to check with you.',
-                    kind: 'unallocated',
-                  }),
-                ),
-            );
-            set({ lastMonthProcessed: ms });
-          }
+          const before = data();
+          const after = runTimeRules(before, scopeEnv(systemEnv(), 'sync'));
+          if (after !== before) set(after);
         },
 
         resetAll: () => set(initialData),
@@ -621,6 +489,8 @@ export function getAppData(state: AppData & Actions = useStore.getState()): AppD
     pendingReason: state.pendingReason,
     pantry: state.pantry,
     groceryChecked: state.groceryChecked,
+    meals: state.meals,
+    groceries: state.groceries,
     tried: state.tried,
     goals: state.goals,
     foundMoney: state.foundMoney,
@@ -636,3 +506,8 @@ export function getAppData(state: AppData & Actions = useStore.getState()): AppD
 export function exportData() {
   return JSON.stringify({ exportedAt: new Date().toISOString(), app: 'FinFeast', data: getAppData() }, null, 2);
 }
+
+// Keep the catalogue registry (src/lib/catalog.ts) in step with the user's meals, so the planner
+// and every recipe lookup see custom, edited and hidden meals. Listeners run synchronously after set().
+setUserMeals(useStore.getState().meals);
+useStore.subscribe((state) => setUserMeals(state.meals));
