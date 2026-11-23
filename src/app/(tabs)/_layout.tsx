@@ -1,15 +1,21 @@
 import { Redirect } from 'expo-router';
 import { Tabs } from 'expo-router/js-tabs';
 import { useEffect, useMemo } from 'react';
-import { AppState } from 'react-native';
+import { AppState, StyleSheet } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Icon } from '@/components/ui';
+import { BlurTargetProvider, Icon, Material } from '@/components/ui';
 import { useInsights } from '@/hooks/useInsights';
 import { fonts, useTheme } from '@/theme';
 import { useStore } from '@/store/useStore';
 
+export const unstable_settings = {
+  initialRouteName: 'index',
+};
+
 export default function TabLayout() {
   const { c } = useTheme();
+  const insets = useSafeAreaInsets();
   const onboarded = useStore((s) => s.onboarded);
   const syncTime = useStore((s) => s.syncTime);
   const pendingFound = useStore((s) => s.foundMoney.filter((f) => f.status === 'pending').length);
@@ -27,17 +33,22 @@ export default function TabLayout() {
       headerShown: false,
       tabBarActiveTintColor: c.primary,
       tabBarInactiveTintColor: c.textMuted,
-      tabBarStyle: { backgroundColor: c.surface, borderTopColor: c.border, height: 64, paddingTop: 6 },
+      // Translucent material bar: content scrolls underneath (screens pad for it via BottomTabBarHeightContext)
+      // 64pt of controls plus the home-indicator / gesture-bar inset on every platform
+      tabBarStyle: { position: 'absolute' as const, backgroundColor: 'transparent', borderTopColor: c.separator, borderTopWidth: StyleSheet.hairlineWidth, elevation: 0, height: 64 + insets.bottom, paddingTop: 6, paddingBottom: insets.bottom },
+      tabBarBackground: () => <Material style={StyleSheet.absoluteFill} />,
       tabBarLabelStyle: { fontFamily: fonts.medium, fontSize: 11, marginBottom: 4 },
       tabBarBadgeStyle: { fontFamily: fonts.bold, fontSize: 10 },
       sceneStyle: { backgroundColor: c.background },
     }),
-    [c],
+    [c, insets.bottom],
   );
 
   if (!onboarded) return <Redirect href="/onboarding" />;
 
   return (
+    // Lets the translucent tab bar blur the focused screen on Android too
+    <BlurTargetProvider>
     <Tabs screenOptions={screenOptions}>
       <Tabs.Screen
         name="index"
@@ -63,5 +74,6 @@ export default function TabLayout() {
       />
       <Tabs.Screen name="profile" options={{ title: 'Profile', tabBarIcon: ({ color, focused }) => <Icon name={focused ? 'person-circle' : 'person-circle-outline'} color={color} size={24} /> }} />
     </Tabs>
+    </BlurTargetProvider>
   );
 }

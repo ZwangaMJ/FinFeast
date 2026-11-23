@@ -2,8 +2,8 @@
 import type { Bill, Category, Confidence, DocType, IncomeFrequency, ReceiptItem, Transaction } from '@/store/types';
 import {
   BankStatementPdfError,
-  parseBankStatementItems,
-  parseBankStatementText,
+  parseStatementItems,
+  parseStatementText,
   recurringBillsFromStatement,
   toAppTransactions,
   type BankStatementDocument,
@@ -79,9 +79,11 @@ async function parsePayslipPdf(uri: string): Promise<{ document: PayslipDocument
 async function parseBankStatementPdf(uri: string): Promise<BankStatementDocument> {
   try {
     const extracted = await extractBankStatementPdf(uri);
-    return extracted.items
-      ? parseBankStatementItems(extracted.items, extracted.pages)
-      : parseBankStatementText(extracted.text, extracted.pages);
+    // The pure parser needs a year for rows without one; this boundary reads the clock
+    const options = { pages: extracted.pages, fallbackYear: new Date().getFullYear() };
+    const result = extracted.items ? parseStatementItems(extracted.items, options) : parseStatementText(extracted.text, options);
+    if (!result.ok) throw new ParseError('illegible', result.error.message);
+    return result.value;
   } catch (error) {
     if (error instanceof BankStatementPdfError) throw new ParseError(error.reason, error.message);
     throw error;

@@ -1,37 +1,80 @@
 import { router } from 'expo-router';
 import { useState, type ReactNode } from 'react';
-import { Pressable, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 
 import { Ring } from '@/components/charts';
-import { Button, Card, Chip, Icon, IconButton, Pill, Row, Sheet, Txt, useCurrency, type IconName } from '@/components/ui';
-import { RECIPE_BY_ID } from '@/data/recipes';
+import { FoodImage } from '@/components/FoodImage';
+import { Button, Card, Chip, FadeSwap, Icon, IconButton, Pill, ProgressBar, Row, Separated, Sheet, Touchable, Txt, useCurrency, type IconName } from '@/components/ui';
 import { monthsToGoal } from '@/lib/budget';
+import { getRecipe } from '@/lib/catalog';
 import { money } from '@/lib/format';
-import { tick } from '@/lib/haptics';
+import { success, tick } from '@/lib/haptics';
 import type { Insight } from '@/lib/insights';
 import { servingCost } from '@/lib/mealPlanner';
 import type { Confidence, Currency, FoundMoney, Goal, PlannedMeal, Rule } from '@/store/types';
 import { useStore } from '@/store/useStore';
-import { radius, useTheme, type Tone } from '@/theme';
+import { space, useTheme, type Tone } from '@/theme';
 
-/** The app's signature element: one serif figure, one line of context, one CTA. */
-export function HeroCard({ label, value, context, cta, tone = 'green' }: { label: string; value: string; context: string; cta?: { label: string; onPress: () => void }; tone?: Tone }) {
-  const { tone: t } = useTheme();
+/**
+ * The app's signature element: one serif figure, one line of context, an optional
+ * meter, then related rows (`children`) grouped in the same container.
+ */
+export function HeroCard({
+  label,
+  value,
+  context,
+  cta,
+  tone = 'green',
+  meter,
+  valueColor,
+  children,
+}: {
+  label: string;
+  value: string;
+  context: string;
+  cta?: { label: string; onPress: () => void };
+  tone?: Tone;
+  meter?: { value: number; tone: Tone; accessibilityLabel: string };
+  valueColor?: string;
+  children?: ReactNode;
+}) {
+  const { c, tone: t } = useTheme();
   return (
-    <Card style={{ gap: 6 }}>
-      <Txt v="label" color={t(tone).fg}>
-        {label}
-      </Txt>
-      <Txt v="hero" accessibilityLabel={`${value} ${label}`}>
+    <Card style={{ gap: space.xxs + 2 }}>
+      <Row style={{ justifyContent: 'space-between' }}>
+        <Txt v="label" color={t(tone).fg}>
+          {label}
+        </Txt>
+        {cta ? (
+          <Touchable onPress={cta.onPress} hitSlop={10} scaleTo={0.94} accessibilityLabel={cta.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 2, minHeight: 28 }}>
+            <Txt v="smallStrong" color={c.primary}>
+              {cta.label}
+            </Txt>
+            <Icon name="chevron-forward" size={15} color={c.primary} />
+          </Touchable>
+        ) : null}
+      </Row>
+      <Txt v="hero" color={valueColor} accessibilityLabel={`${value} ${label}`}>
         {value}
       </Txt>
-      <Txt muted>{context}</Txt>
-      {cta ? <Button label={cta.label} onPress={cta.onPress} variant="tonal" tone={tone} small style={{ alignSelf: 'flex-start', marginTop: 8 }} /> : null}
+      <Txt v="small" muted>
+        {context}
+      </Txt>
+      {meter ? (
+        <View accessible accessibilityRole="progressbar" accessibilityLabel={meter.accessibilityLabel} style={{ marginTop: space.xs }}>
+          <ProgressBar value={meter.value} tone={meter.tone} height={6} />
+        </View>
+      ) : null}
+      {children ? (
+        <View style={{ marginTop: space.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.separator }}>
+          <Separated>{children}</Separated>
+        </View>
+      ) : null}
     </Card>
   );
 }
 
-const INSIGHT_TONE: Record<Insight['type'], Tone> = { subscription: 'blue', dining: 'amber', grocery: 'green', waste: 'green', reallocation: 'blue' };
+const INSIGHT_TONE: Record<Insight['type'], Tone> = { subscription: 'blue', dining: 'amber', grocery: 'green', waste: 'green', reallocation: 'blue', velocity: 'amber' };
 
 export function InsightCard({ insight, compact }: { insight: Insight; compact?: boolean }) {
   const { tone } = useTheme();
@@ -172,75 +215,118 @@ function SplitSheet({ fm, goals, visible, onClose, onConfirm }: { fm: FoundMoney
 
 const CAL_DOT = (kcal: number, target: number) => (kcal > target * 0.42 ? 'amber' : kcal < target * 0.18 ? 'blue' : 'green') as Tone;
 
-export function MealTile({ emoji, tint, size = 64 }: { emoji: string; tint: Tone; size?: number }) {
-  const { tone } = useTheme();
-  return (
-    <View style={{ width: size, height: size, borderRadius: radius.md, backgroundColor: tone(tint).bg, alignItems: 'center', justifyContent: 'center' }}>
-      <Txt style={{ fontSize: size * 0.5, lineHeight: size * 0.62 }}>{emoji}</Txt>
-    </View>
-  );
-}
+export { MealTile } from '@/components/FoodImage';
 
-export function MealCard({ slotLabel, meal, onPress, onSwap, onCooked, compact }: { slotLabel: string; meal: PlannedMeal; onPress: () => void; onSwap?: () => void; onCooked?: () => void; compact?: boolean }) {
+function MealMeta({ meal, compact }: { meal: PlannedMeal; compact?: boolean }) {
   const { c, tone } = useTheme();
   const currency = useCurrency();
   const target = useStore((s) => s.profile.calorieTarget);
-  const recipe = RECIPE_BY_ID[meal.recipeId];
-  const tried = useStore((s) => s.tried.includes(meal.recipeId));
+  const recipe = getRecipe(meal.recipeId);
   const cost = servingCost(meal.recipeId, meal.swaps, currency);
   const dot = CAL_DOT(recipe.kcal, target);
   return (
-    <Card padded={false} style={{ padding: 12, opacity: meal.cooked ? 0.75 : 1 }}>
-      <Pressable
-        onPress={onPress}
-        accessibilityRole="button"
-        accessibilityLabel={`${slotLabel}: ${recipe.name}, ${money(cost, currency)} per serving, ${recipe.kcal} calories`}
-        style={({ pressed }) => [{ flexDirection: 'row', gap: 12, alignItems: 'flex-start' }, pressed && { opacity: 0.8 }]}>
-        <MealTile emoji={recipe.emoji} tint={recipe.tint} size={compact ? 52 : 64} />
-        <View style={{ flex: 1, gap: 3 }}>
-          <Row gap={6}>
-            <Txt v="label" muted>
-              {slotLabel}
-            </Txt>
-            {!tried ? <Pill label="New" tone="blue" /> : null}
+    <Row gap={space.sm - 2} wrap>
+      <Txt v={compact ? 'caption' : 'small'} muted tabular>
+        {money(cost, currency, { decimals: currency === 'ZAR' ? 0 : 2 })}/serving
+      </Txt>
+      <Row gap={4}>
+        <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: tone(dot).fg }} />
+        <Txt v={compact ? 'caption' : 'small'} muted tabular>
+          {recipe.kcal} kcal
+        </Txt>
+      </Row>
+      <Row gap={3}>
+        <Icon name="time-outline" size={13} color={c.textFaint} />
+        <Txt v={compact ? 'caption' : 'small'} muted tabular>
+          {recipe.minutes} min
+        </Txt>
+      </Row>
+    </Row>
+  );
+}
+
+/**
+ * A planned meal. `compact` renders a plain row for grouped lists (Home);
+ * the full card adds 44-pt Swap / Cooked actions. Swapping cross-fades the content.
+ */
+export function MealCard({ slotLabel, meal, onPress, onSwap, onCooked, compact }: { slotLabel: string; meal: PlannedMeal; onPress: () => void; onSwap?: () => void; onCooked?: () => void; compact?: boolean }) {
+  const { c } = useTheme();
+  const currency = useCurrency();
+  const recipe = getRecipe(meal.recipeId);
+  const tried = useStore((s) => s.tried.includes(meal.recipeId));
+  const cost = servingCost(meal.recipeId, meal.swaps, currency);
+  const leftover = meal.leftoverOf !== undefined;
+  const label = `${slotLabel}: ${recipe.name}, ${money(cost, currency)} per serving, ${recipe.kcal} calories${meal.cooked ? ', cooked' : ''}`;
+
+  const summary = (
+    <FadeSwap swapKey={meal.recipeId} style={{ flexDirection: 'row', gap: space.sm, alignItems: compact ? 'center' : 'flex-start' }}>
+      <FoodImage query={recipe.name} fallbackEmoji={recipe.emoji} tint={recipe.tint} image={recipe.image} size={compact ? 44 : 60} />
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Txt v="label" muted>
+          {slotLabel}
+        </Txt>
+        <Txt v={compact ? 'bodyStrong' : 'h3'} numberOfLines={2} style={meal.cooked ? { color: c.textMuted } : undefined}>
+          {recipe.name}
+        </Txt>
+        <MealMeta meal={meal} compact={compact} />
+        {!compact && (!tried || meal.cooked || leftover || meal.batchNote || meal.swaps.length) ? (
+          <Row gap={6} wrap style={{ marginTop: space.xxs }}>
             {meal.cooked ? <Pill label="Cooked" tone="green" icon="checkmark" /> : null}
+            {!tried ? <Pill label="New recipe" tone="blue" icon="sparkles-outline" /> : null}
+            {leftover ? <Pill label="Leftovers · no cooking" tone="amber" icon="layers-outline" /> : meal.batchNote ? <Pill label="Cook a double batch" tone="amber" icon="layers-outline" /> : null}
+            {meal.swaps.length ? <Pill label={`${meal.swaps.length} cheaper swap${meal.swaps.length > 1 ? 's' : ''}`} tone="green" icon="pricetag-outline" /> : null}
           </Row>
-          <Txt v="h3" numberOfLines={2}>
-            {recipe.name}
-          </Txt>
-          <Row gap={10}>
-            <Txt v="small" muted tabular>
-              {money(cost, currency, { decimals: currency === 'ZAR' ? 0 : 2 })}/serving
-            </Txt>
-            <Row gap={4}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: tone(dot).fg }} />
-              <Txt v="small" muted tabular>
-                {recipe.kcal} kcal
-              </Txt>
-            </Row>
-            <Txt v="small" muted>
-              {recipe.minutes} min
-            </Txt>
-          </Row>
-          {meal.batchNote || meal.leftoverOf !== undefined ? (
-            <Row gap={4}>
-              <Icon name="layers-outline" size={14} color={c.amber} />
-              <Txt v="caption" color={c.amber}>
-                {meal.batchNote ?? 'Leftovers from last night — no cooking'}
-              </Txt>
-            </Row>
+        ) : null}
+      </View>
+      {compact ? (meal.cooked ? <Icon name="checkmark-circle" size={20} color={c.success} /> : <Icon name="chevron-forward" size={17} color={c.textFaint} />) : null}
+    </FadeSwap>
+  );
+
+  if (compact) {
+    return (
+      <Touchable onPress={onPress} accessibilityLabel={label} scaleTo={0.985} style={{ paddingVertical: space.sm - 2 }}>
+        {summary}
+      </Touchable>
+    );
+  }
+
+  return (
+    <Card padded={false} style={{ padding: space.sm + 2 }}>
+      <Touchable onPress={onPress} accessibilityLabel={label} scaleTo={0.985}>
+        {summary}
+      </Touchable>
+      {onSwap || onCooked ? (
+        <Row gap={space.xs} style={{ marginTop: space.sm, paddingTop: space.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.separator }}>
+          {onSwap ? (
+            <Button
+              label={leftover ? 'Cook fresh' : 'Swap meal'}
+              icon="shuffle-outline"
+              small
+              variant="secondary"
+              style={{ flex: 1 }}
+              accessibilityLabel={`Swap ${slotLabel.toLowerCase()} for another recipe that fits your budget and calories`}
+              onPress={() => {
+                tick();
+                onSwap();
+              }}
+            />
           ) : null}
-          {meal.swaps.length ? (
-            <Txt v="caption" color={c.primary}>
-              {meal.swaps.length} cheaper swap{meal.swaps.length > 1 ? 's' : ''} applied
-            </Txt>
+          {onCooked ? (
+            <Button
+              label={meal.cooked ? 'Cooked' : 'Mark cooked'}
+              icon={meal.cooked ? 'checkmark-circle' : 'checkmark-circle-outline'}
+              small
+              variant="tonal"
+              tone={meal.cooked ? 'green' : 'gray'}
+              style={{ flex: 1 }}
+              accessibilityLabel={meal.cooked ? `${slotLabel} cooked. Double-tap to undo` : `Mark ${slotLabel.toLowerCase()} as cooked`}
+              onPress={() => {
+                if (!meal.cooked) success();
+                else tick();
+                onCooked();
+              }}
+            />
           ) : null}
-        </View>
-      </Pressable>
-      {!compact && (onSwap || onCooked) ? (
-        <Row gap={8} style={{ marginTop: 10, justifyContent: 'flex-end' }}>
-          {onSwap ? <Button label="Swap" icon="shuffle-outline" small variant="secondary" onPress={onSwap} /> : null}
-          {onCooked ? <Button label={meal.cooked ? 'Undo' : 'Cooked it'} icon={meal.cooked ? 'arrow-undo-outline' : 'checkmark-outline'} small variant="tonal" onPress={onCooked} /> : null}
         </Row>
       ) : null}
     </Card>

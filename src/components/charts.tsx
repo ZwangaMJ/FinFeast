@@ -57,7 +57,7 @@ export function Ring({
 }
 
 /** Weekly food spend: actual (green, amber when over) against plan (outlined marker). */
-export function SpendBars({ weeks, currencyFmt }: { weeks: { label: string; actual: number; plan: number }[]; currencyFmt: (n: number) => string }) {
+export function SpendBars({ weeks, currencyFmt }: { weeks: readonly { label: string; actual: number; plan: number }[]; currencyFmt: (n: number) => string }) {
   const { c } = useTheme();
   const W = 320;
   const H = 150;
@@ -101,7 +101,7 @@ export function SpendBars({ weeks, currencyFmt }: { weeks: { label: string; actu
 }
 
 /** Calendar heat strip of eating-out spend by weekday (risky-day prediction). */
-export function HeatStrip({ days, currencyFmt }: { days: { day: number; avg: number; intensity: number; risky: boolean }[]; currencyFmt: (n: number) => string }) {
+export function HeatStrip({ days, currencyFmt }: { days: readonly { day: number; avg: number; intensity: number; risky: boolean }[]; currencyFmt: (n: number) => string }) {
   const { c, tone } = useTheme();
   const order = [1, 2, 3, 4, 5, 6, 0];
   const byDay = new Map(days.map((day) => [day.day, {
@@ -136,7 +136,7 @@ export function HeatStrip({ days, currencyFmt }: { days: { day: number; avg: num
 }
 
 /** Month cashflow line: actual-to-date solid, projection dashed, bill days marked. */
-export function ForecastChart({ points, bills, band }: { points: { day: number; balance: number; actual: boolean }[]; bills: { day: number }[]; band: number }) {
+export function ForecastChart({ points, bills, band }: { points: readonly { day: number; balance: number; actual: boolean }[]; bills: readonly { day: number }[]; band: number }) {
   const { c } = useTheme();
   const W = 320;
   const H = 120;

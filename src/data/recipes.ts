@@ -1,6 +1,7 @@
 import type { Allergen, MealSlot } from '@/store/types';
 
-export type Aisle = 'Produce' | 'Meat & fish' | 'Dairy & eggs' | 'Bakery' | 'Pantry' | 'Frozen';
+/** `Other` holds the per-serving cost of user meals priced by the user, not by pack. */
+export type Aisle = 'Produce' | 'Meat & fish' | 'Dairy & eggs' | 'Bakery' | 'Pantry' | 'Frozen' | 'Other';
 
 export type Ingredient = {
   name: string;
@@ -77,6 +78,14 @@ export type Recipe = {
   classic?: boolean; // familiar to most households (doesn't count as "new")
   ingredients: { key: string; use: number }[]; // fraction of a pack per serving
   steps: string[];
+  /** Where the recipe comes from; built-ins omit it. See src/lib/catalog.ts. */
+  source?: 'builtin' | 'custom' | 'edited';
+  /** The `UserMeal.id` behind a custom or edited recipe. */
+  userMealId?: string;
+  /** Free-text ingredients of a user-priced meal (shown instead of pack ingredients). */
+  customIngredients?: { name: string; qty?: number | null; unit?: string | null }[];
+  notes?: string;
+  image?: { url: string; thumbUrl?: string | null; photographer?: string | null; photographerUrl?: string | null; sourceUrl?: string | null; provider?: string | null } | null;
 };
 
 export const RECIPES: Recipe[] = [

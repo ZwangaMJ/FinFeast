@@ -6,6 +6,7 @@ import { AmountInput, Button, Card, Chip, Divider, Icon, ListRow, Pill, Row, Scr
 import { CURRENCY_LABELS, money } from '@/lib/format';
 import type { Allergen, Currency, DietPattern, ThemeMode } from '@/store/types';
 import { exportData, useStore } from '@/store/useStore';
+import { useAuthStore } from '@/store/useAuthStore';
 import { useTheme } from '@/theme';
 
 const DIETS: { v: DietPattern; l: string }[] = [
@@ -43,6 +44,8 @@ export default function Profile() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [exported, setExported] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
   const toggleAllergy = (a: Allergen) => s.setProfile({ allergies: p.allergies.includes(a) ? p.allergies.filter((x) => x !== a) : [...p.allergies, a] });
 
   return (
@@ -56,9 +59,7 @@ export default function Profile() {
           </View>
           <View style={{ flex: 1 }}>
             <Txt v="h2">{p.name || 'Your profile'}</Txt>
-            <Txt v="small" muted>
-              Saved on this device
-            </Txt>
+            <Txt v="small" muted>{p.email || 'Signed in'}</Txt>
           </View>
           {s.manualMode ? <Pill label="Manual mode" tone="amber" /> : <Pill label="Document mode" tone="green" />}
         </Row>
@@ -175,9 +176,9 @@ export default function Profile() {
       <Section title="Security & your data">
         <Card tone="green" style={{ gap: 10 }}>
           {[
-            ['phone-portrait-outline', 'Your data is stored on this device for now; account sign-in and cloud sync are coming soon.'],
-            ['eye-off-outline', 'Supported payslip and bank statement PDFs are read on this device. Receipt and tax-form extraction are not available yet.'],
-            ['time-outline', 'Your financial records stay on this device.'],
+            ['lock-closed-outline', 'Your account is protected by email and password sign-in. Your cloud records are restricted to your signed-in account.'],
+            ['eye-off-outline', 'Payslip and bank statement PDFs are read on this device; the extracted records sync to your account.'],
+            ['phone-portrait-outline', 'App data is cached on this device while signed in; the cache is not separately encrypted. Sign out to remove it.'],
             ['ban-outline', 'Never sold. No third-party ad tracking.'],
           ].map(([icon, text]) => (
             <Row key={text} gap={10} style={{ alignItems: 'flex-start' }}>
@@ -198,12 +199,30 @@ export default function Profile() {
               setExported(true);
             }}
           />
+          {accountError ? <Txt v="small" color={tone('red').fg}>{accountError}</Txt> : null}
+          <Button
+            label={signingOut ? 'Signing out…' : 'Sign out'}
+            icon="log-out-outline"
+            variant="secondary"
+            disabled={signingOut || deleting}
+            onPress={async () => {
+              setSigningOut(true);
+              setAccountError(null);
+              try {
+                await useAuthStore.getState().signOut();
+              } catch (error) {
+                setAccountError(error instanceof Error ? error.message : 'Could not sign out. Please try again.');
+              } finally {
+                setSigningOut(false);
+              }
+            }}
+          />
           <Button label="Delete all my data" icon="trash-outline" variant="destructive" disabled={deleting} onPress={() => setConfirmDelete(true)} />
         </View>
       </Section>
 
       <Txt v="caption" muted center style={{ marginTop: 26 }}>
-        FinFeast prototype · data stays on this device. FinFeast is not a licensed financial adviser.
+        FinFeast prototype · data syncs to your account. FinFeast is not a licensed financial adviser.
       </Txt>
 
       <Sheet
@@ -243,17 +262,23 @@ export default function Profile() {
               variant="destructive"
               disabled={deleting}
               onPress={async () => {
-                setConfirmDelete(false);
                 setDeleting(true);
-                s.resetAll();
-                setDeleting(false);
-                router.replace('/onboarding');
+                setAccountError(null);
+                try {
+                  await useAuthStore.getState().deleteAllData();
+                  setConfirmDelete(false);
+                  router.replace('/onboarding');
+                } catch (error) {
+                  setAccountError(error instanceof Error ? error.message : 'Could not delete your data. Please try again.');
+                } finally {
+                  setDeleting(false);
+                }
               }}
             />
             <Button label="Cancel" variant="ghost" tone="gray" onPress={() => setConfirmDelete(false)} />
           </>
         }>
-        <Txt muted>This permanently deletes your documents, transactions, plans, goals and settings from this device. Export first if you’d like a copy.</Txt>
+        <Txt muted>This permanently deletes your documents, transactions, plans, goals and settings from your account and this device. Export first if you’d like a copy.</Txt>
       </Sheet>
     </Screen>
   );

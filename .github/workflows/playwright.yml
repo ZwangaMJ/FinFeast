@@ -16,9 +16,15 @@ jobs:
     - name: Install dependencies
       run: npm ci
     - name: Install Playwright Browsers
-      run: npx playwright install --with-deps
-    - name: Run Playwright tests
-      run: npx playwright test
+      run: npx playwright install --with-deps chromium
+    - name: Lint
+      run: npm run lint
+    - name: Typecheck
+      run: npm run typecheck
+    - name: Unit tests
+      run: npm run test:unit
+    - name: Playwright E2E (web export, no Pixabay/Supabase credentials)
+      run: npm run test:e2e
     - uses: actions/upload-artifact@v4
       if: ${{ !cancelled() }}
       with:

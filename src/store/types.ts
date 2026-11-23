@@ -126,6 +126,68 @@ export type MealPlan = {
 
 export type PantryItem = { key: string; addedAt: string };
 
+/** A resolved food photo (hotlinked from the provider) with its attribution. */
+export type FoodImageRef = {
+  url: string;
+  thumbUrl?: string | null;
+  /** e.g. "Jane Doe" */
+  photographer?: string | null;
+  photographerUrl?: string | null;
+  /** The photo's page on the provider (attribution link). */
+  sourceUrl?: string | null;
+  provider?: string | null;
+};
+
+export type MealKind = MealSlot | 'snack';
+/** What a meal contains, from most to least restrictive. */
+export type MealDiet = 'vegan' | 'vegetarian' | 'fish' | 'poultry' | 'red';
+export type CustomIngredient = { name: string; qty?: number | null; unit?: string | null };
+
+/**
+ * A user's meal. Either a brand-new meal (`baseRecipeId` null) or the user's edited copy of
+ * a built-in recipe (`baseRecipeId` set). `hidden` on an edited copy removes that built-in
+ * from the user's planner. `costPerServing` null keeps the built-in's ingredient pricing;
+ * otherwise the meal is priced per serving in `costCurrency`.
+ */
+export type UserMeal = {
+  id: string;
+  baseRecipeId: string | null;
+  hidden: boolean;
+  name: string;
+  slot: MealKind;
+  emoji: string;
+  kcal: number;
+  protein: number;
+  minutes: number;
+  costPerServing: number | null;
+  costCurrency: Currency;
+  diet: MealDiet;
+  allergens: Allergen[];
+  ingredients: CustomIngredient[];
+  notes: string;
+  steps: string[];
+  image: FoodImageRef | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** A grocery item the user added (standalone, or for one of their meals). */
+export type GroceryEntry = {
+  id: string;
+  name: string;
+  quantity: number | null;
+  unit: string | null;
+  estCost: number | null;
+  costCurrency: Currency;
+  checked: boolean;
+  /** A recipe id (built-in or `u_<meal id>`) this item is for, if any. */
+  mealId: string | null;
+  emoji: string;
+  image: FoodImageRef | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type RuleKind = 'meal_surplus' | 'fixed' | 'percent' | 'roundup' | 'threshold';
 
 export type Rule = {
@@ -168,3 +230,34 @@ export type FoundMoney = {
 };
 
 export type WeekRecord = { weekStart: string; estimate: number; actual: number };
+
+/** The persisted app state (everything except store actions). */
+export type AppData = {
+  onboarded: boolean;
+  profile: Profile;
+  settings: Settings;
+  manualMode: boolean;
+  income: Income | null;
+  weeklyFoodBudget: number;
+  bills: Bill[];
+  transactions: Transaction[];
+  documents: DocRecord[];
+  plan: MealPlan | null;
+  pendingPlan: MealPlan | null;
+  pendingReason: string | null;
+  pantry: PantryItem[];
+  groceryChecked: string[];
+  /** User-created meals and edited/hidden copies of built-in recipes. */
+  meals: UserMeal[];
+  /** Grocery items the user added by hand. */
+  groceries: GroceryEntry[];
+  tried: string[];
+  goals: Goal[];
+  foundMoney: FoundMoney[];
+  weekHistory: WeekRecord[];
+  dismissedInsights: string[];
+  assignedWeeks: string[];
+  lastMonthProcessed: string | null;
+  lastPaydayProcessed: string | null;
+  taxInfo: { annualIncome: number; retirement: number } | null;
+};

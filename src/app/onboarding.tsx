@@ -4,16 +4,16 @@ import { View } from 'react-native';
 
 import { DocumentFlow } from '@/components/DocumentFlow';
 import { MealTile } from '@/components/cards';
-import { AmountInput, Button, Card, Chip, Field, Icon, Row, Screen, Stepper, Txt, TrustStrip } from '@/components/ui';
-import { RECIPE_BY_ID } from '@/data/recipes';
+import { AmountInput, Button, Card, Chip, FadeSwap, Field, Icon, IconButton, Row, Screen, Stepper, Txt, TrustStrip } from '@/components/ui';
 import { weeklyFlexible } from '@/lib/budget';
+import { getRecipe } from '@/lib/catalog';
 import { DAY_SHORT, weekday } from '@/lib/dates';
 import { CURRENCY_LABELS, money } from '@/lib/format';
 import { success } from '@/lib/haptics';
 import { estimateRange, planCost } from '@/lib/mealPlanner';
 import type { Allergen, Currency, DietPattern, GoalPriority } from '@/store/types';
 import { useStore } from '@/store/useStore';
-import { useTheme } from '@/theme';
+import { space, useTheme } from '@/theme';
 
 const DIETS: { v: DietPattern; l: string }[] = [
   { v: 'omnivore', l: 'Everything' },
@@ -38,16 +38,29 @@ const PRIORITIES: { v: GoalPriority; l: string; icon: string }[] = [
   { v: 'understand', l: 'Just understand my money', icon: 'eye-outline' },
 ];
 
+const STEPS = 5;
+
 export default function Onboarding() {
   const [step, setStep] = useState(1);
   const [docReady, setDocReady] = useState(false);
   const [manual, setManual] = useState(false);
+  // +1 = moving forward (enter from the right), −1 = going back (enter from the left)
+  const [direction, setDirection] = useState<1 | -1>(1);
 
-  const next = (n?: number) => setStep((s) => n ?? s + 1);
+  const next = (n?: number) => {
+    setDirection(1);
+    setStep((s) => n ?? s + 1);
+  };
+  const back = () => {
+    setDirection(-1);
+    if (manual) setManual(false);
+    else setStep((s) => (s === 4 && docReady ? 2 : s - 1));
+  };
 
   return (
     <Screen edges={['top', 'bottom']}>
-      {step > 1 && step < 5 ? <Progress step={step} onBack={() => (manual ? setManual(false) : setStep((s) => (s === 4 && docReady ? 2 : s - 1)))} /> : null}
+      {step > 1 && step < STEPS ? <Progress step={step} onBack={back} /> : null}
+      <FadeSwap swapKey={`${step}-${manual}`} axis="x" from={direction * 24}>
       {step === 1 ? (
         <Welcome
           onStart={() => next(2)}
@@ -64,22 +77,32 @@ export default function Onboarding() {
       ) : null}
       {step === 4 && manual ? <ManualMode onDone={() => next(5)} /> : null}
       {step === 5 ? <FirstPlan /> : null}
+      </FadeSwap>
     </Screen>
   );
 }
 
+/**
+ * Linear setup, so a segmented progress bar (not paging dots, which imply swiping).
+ * Back sits where people expect it: top-left.
+ */
 function Progress({ step, onBack }: { step: number; onBack: () => void }) {
   const { c } = useTheme();
   return (
-    <Row style={{ marginBottom: 18 }} gap={12}>
-      <Button label="Back" icon="chevron-back" variant="ghost" tone="gray" small onPress={onBack} />
-      <Row gap={6} style={{ flex: 1, justifyContent: 'flex-end' }}>
-        {[1, 2, 3, 4, 5].map((i) => (
-          <View key={i} style={{ width: i === step ? 22 : 8, height: 8, borderRadius: 4, backgroundColor: i <= step ? c.primary : c.border }} />
+    <Row style={{ marginBottom: space.lg }} gap={space.sm}>
+      <IconButton icon="chevron-back" label="Back" onPress={onBack} />
+      <View
+        accessible
+        accessibilityRole="progressbar"
+        accessibilityLabel={`Step ${step} of ${STEPS}`}
+        accessibilityValue={{ min: 1, max: STEPS, now: step }}
+        style={{ flex: 1, flexDirection: 'row', gap: space.xxs }}>
+        {Array.from({ length: STEPS }, (_, i) => (
+          <View key={i} style={{ flex: 1, height: 4, borderRadius: 2, backgroundColor: i < step ? c.primary : c.fill }} />
         ))}
-      </Row>
-      <Txt v="caption" muted accessibilityLabel={`Step ${step} of 5`}>
-        {step}/5
+      </View>
+      <Txt v="caption" muted tabular style={{ minWidth: 40, textAlign: 'right' }}>
+        {step} of {STEPS}
       </Txt>
     </Row>
   );
@@ -113,7 +136,7 @@ function Welcome({ onStart, onDoc }: { onStart: () => void; onDoc: () => void })
           </Row>
         ))}
       </View>
-      <TrustStrip text="Your data stays on this device for now. Delete everything anytime." />
+      <TrustStrip text="Your account keeps your data in sync. Delete everything anytime." />
       <Button label="Start free" onPress={onStart} style={{ marginTop: 6 }} />
       <Button label="I have a document ready" variant="secondary" icon="document-attach-outline" onPress={onDoc} />
     </View>
@@ -131,7 +154,7 @@ function Account({ onDone }: { onDone: () => void }) {
   return (
     <View style={{ gap: 14 }}>
       <Txt v="title">Set up your profile</Txt>
-      <Txt muted>No sign-in needed. Your data stays on this device while account sync is being set up.</Txt>
+      <Txt muted>Your profile is connected to your signed-in account. Choose a name to personalize your plans.</Txt>
       <Field label="What should we call you?" value={name} onChange={setName} placeholder="First name" />
       <Button label="Continue" onPress={finish} />
     </View>
@@ -215,8 +238,6 @@ function FirstPlan() {
   const { tone } = useTheme();
   const complete = useStore((s) => s.completeOnboarding);
   const s = useStore();
-  const setSettings = useStore((st) => st.setSettings);
-  const [asked, setAsked] = useState(false);
 
   useEffect(() => {
     complete();
@@ -254,7 +275,7 @@ function FirstPlan() {
             </Txt>
           </Row>
           {plan.days.slice(0, 3).map((d) => {
-            const r = RECIPE_BY_ID[d.slots.dinner.recipeId];
+            const r = getRecipe(d.slots.dinner.recipeId);
             return (
               <Row key={d.date} gap={12}>
                 <MealTile emoji={r.emoji} tint={r.tint} size={44} />
@@ -285,27 +306,7 @@ function FirstPlan() {
           </Txt>
         </Card>
       ) : null}
-      {!asked ? (
-        <Card tone="amber" style={{ gap: 8 }}>
-          <Txt v="h3">Get your Friday takeaway alert?</Txt>
-          <Txt v="small" muted>
-            One friendly nudge on days you tend to spend more, and when found money is waiting. Never more than one tip at a time.
-          </Txt>
-          <Row gap={8}>
-            <Button
-              label="Turn on"
-              small
-              tone="amber"
-              variant="tonal"
-              onPress={() => {
-                setSettings({ notifications: true, riskAlerts: true });
-                setAsked(true);
-              }}
-            />
-            <Button label="Not now" small variant="ghost" tone="gray" onPress={() => setAsked(true)} />
-          </Row>
-        </Card>
-      ) : null}
+      {/* No permission prompt here: reminders are offered in context, the first time a risky day shows up on Home */}
       <Button label="See this week’s plan" icon="arrow-forward" onPress={() => router.replace('/meals')} />
     </View>
   );

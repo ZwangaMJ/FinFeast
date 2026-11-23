@@ -1,15 +1,18 @@
 import { router, useLocalSearchParams } from 'expo-router';
-import { View } from 'react-native';
+import { useState } from 'react';
+import { Pressable, View } from 'react-native';
 
-import { MealTile } from '@/components/cards';
-import { Button, Card, Divider, EmptyState, Icon, Pill, Row, Screen, Section, ToggleRow, Txt, useCurrency } from '@/components/ui';
-import { INGREDIENTS, RECIPE_BY_ID } from '@/data/recipes';
+import { FoodImage } from '@/components/FoodImage';
+import { GroceryForm } from '@/components/GroceryForm';
+import { Button, Card, Divider, EmptyState, Icon, IconButton, Pill, Row, Screen, Section, Sheet, ToggleRow, Txt, useCurrency } from '@/components/ui';
+import { foodActions, useGroceries } from '@/hooks/useFood';
+import { getIngredient, getRecipe, isBuiltInRecipeId, VIRTUAL_PREFIX } from '@/lib/catalog';
 import { DAY_LONG, weekday } from '@/lib/dates';
 import { money } from '@/lib/format';
 import { servingCost, swapOptions, unitPrice } from '@/lib/mealPlanner';
 import type { MealSlot } from '@/store/types';
 import { useStore } from '@/store/useStore';
-import { useTheme } from '@/theme';
+import { radius, useTheme } from '@/theme';
 
 export default function MealDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -25,6 +28,9 @@ export default function MealDetail() {
   const regenerateMeal = useStore((s) => s.regenerateMeal);
   const markCooked = useStore((s) => s.markCooked);
   const meal = plan?.days[day]?.slots[slot];
+  const groceries = useGroceries();
+  const [addingItem, setAddingItem] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   if (!plan || !meal) {
     return (
@@ -34,16 +40,31 @@ export default function MealDetail() {
     );
   }
 
-  const r = RECIPE_BY_ID[meal.recipeId];
+  const r = getRecipe(meal.recipeId);
   const perServing = servingCost(r.id, meal.swaps, currency);
   const swaps = swapOptions(r.id, currency);
   const fmt2 = (n: number) => money(n, currency, { decimals: 2 });
   const isLeftover = meal.leftoverOf !== undefined;
+  const builtIn = isBuiltInRecipeId(r.id);
+  const userPriced = r.ingredients.length === 1 && r.ingredients[0].key.startsWith(VIRTUAL_PREFIX);
+  const linked = groceries.filter((g) => g.mealId === r.id);
+
+  const remove = () => {
+    setConfirmDelete(false);
+    foodActions.deleteMeal(r.id);
+    router.back();
+  };
 
   return (
     <Screen
       back={() => router.back()}
       edges={['top', 'bottom']}
+      right={
+        <Row gap={4}>
+          <IconButton icon="create-outline" label="Edit meal" onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: r.id } })} />
+          <IconButton icon="trash-outline" label={builtIn ? 'Remove meal from my meals' : 'Delete meal'} onPress={() => setConfirmDelete(true)} />
+        </Row>
+      }
       footer={
         <Row gap={10}>
           <Button label="Swap meal" icon="shuffle-outline" variant="secondary" style={{ flex: 1 }} onPress={() => regenerateMeal(day, slot)} />
@@ -51,7 +72,7 @@ export default function MealDetail() {
         </Row>
       }>
       <View style={{ alignItems: 'center', gap: 10, marginBottom: 8 }}>
-        <MealTile emoji={r.emoji} tint={r.tint} size={120} />
+        <FoodImage query={r.name} fallbackEmoji={r.emoji} tint={r.tint} image={r.image} aspectRatio={4 / 3} radius={radius.lg} showAttribution />
         <Txt v="label" muted>
           {DAY_LONG[weekday(plan.days[day].date)]} · {slot}
         </Txt>
@@ -118,10 +139,38 @@ export default function MealDetail() {
         </Section>
       ) : null}
 
+      {userPriced ? (
+        <Section title="Ingredients">
+          <Card style={{ gap: 2 }}>
+            {r.customIngredients?.length ? (
+              r.customIngredients.map((i, idx) => (
+                <View key={`${i.name}-${idx}`}>
+                  <Row gap={10} style={{ minHeight: 44 }}>
+                    <Txt v="bodyStrong" style={{ flex: 1 }}>
+                      {i.name}
+                    </Txt>
+                    {i.qty !== null && i.qty !== undefined ? (
+                      <Txt v="small" muted tabular>
+                        {i.qty} {i.unit ?? ''}
+                      </Txt>
+                    ) : null}
+                  </Row>
+                  {idx < r.customIngredients!.length - 1 ? <Divider style={{ marginVertical: 2 }} /> : null}
+                </View>
+              ))
+            ) : (
+              <Txt muted>No ingredients listed. Edit the meal to add some.</Txt>
+            )}
+          </Card>
+          <Txt v="caption" muted style={{ marginTop: 6 }}>
+            Costed at your estimate of {fmt2(perServing)} per serving.
+          </Txt>
+        </Section>
+      ) : (
       <Section title="Ingredients">
         <Card style={{ gap: 2 }}>
           {r.ingredients.map((i, idx) => {
-            const ing = INGREDIENTS[i.key];
+            const ing = getIngredient(i.key);
             const swapped = meal.swaps.includes(i.key) && !!ing.swap;
             const inPantry = pantry.some((p) => p.key === i.key) || ing.staple;
             return (
@@ -147,6 +196,39 @@ export default function MealDetail() {
           Cost shares are what this meal uses; your grocery list buys whole packs and shares them across the week.
         </Txt>
       </Section>
+      )}
+
+      <Section title="Shopping for this meal" action={{ label: 'Add item', onPress: () => setAddingItem(true) }}>
+        {linked.length ? (
+          <Card style={{ gap: 2 }}>
+            {linked.map((g) => (
+              <Pressable key={g.id} onPress={() => foodActions.toggleGroceryItem(g.id)} accessibilityRole="checkbox" accessibilityState={{ checked: g.checked }} aria-checked={g.checked} accessibilityLabel={g.name}>
+                <Row gap={10} style={{ minHeight: 44 }}>
+                  <Icon name={g.checked ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={g.checked ? c.primary : c.textFaint} />
+                  <Txt style={[{ flex: 1 }, g.checked ? { textDecorationLine: 'line-through', color: c.textMuted } : null]}>{g.name}</Txt>
+                  {g.quantity !== null ? (
+                    <Txt v="small" muted tabular>
+                      {g.quantity} {g.unit ?? ''}
+                    </Txt>
+                  ) : null}
+                </Row>
+              </Pressable>
+            ))}
+          </Card>
+        ) : (
+          <Txt v="small" muted>
+            Extra items for this meal go on your grocery list.
+          </Txt>
+        )}
+      </Section>
+
+      {r.notes ? (
+        <Section title="Notes">
+          <Card>
+            <Txt>{r.notes}</Txt>
+          </Card>
+        </Section>
+      ) : null}
 
       {r.steps.length ? (
         <Section title="Method">
@@ -164,6 +246,25 @@ export default function MealDetail() {
           </Card>
         </Section>
       ) : null}
+
+      <GroceryForm key={`add-${r.id}`} visible={addingItem} onClose={() => setAddingItem(false)} mealId={r.id} mealName={r.name} />
+
+      <Sheet
+        visible={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        title={builtIn ? 'Remove this meal?' : 'Delete this meal?'}
+        footer={
+          <Row gap={10}>
+            <Button label="Cancel" variant="secondary" style={{ flex: 1 }} onPress={() => setConfirmDelete(false)} />
+            <Button label={builtIn ? 'Remove' : 'Delete'} tone="red" style={{ flex: 1 }} onPress={remove} />
+          </Row>
+        }>
+        <Txt muted>
+          {builtIn
+            ? `${r.name} won't be planned for you any more, and this slot gets a new meal. You can bring it back from My meals.`
+            : `${r.name} will be deleted, along with grocery items you added for it. This slot gets a new meal.`}
+        </Txt>
+      </Sheet>
     </Screen>
   );
 }

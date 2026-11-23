@@ -1,4 +1,5 @@
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
+import { useEffect } from 'react';
 import { View } from 'react-native';
 
 import { Card, Chip, Row, Screen, Txt } from '@/components/ui';
@@ -8,11 +9,21 @@ import { useStore } from '@/store/useStore';
 const AISLES: Aisle[] = ['Produce', 'Meat & fish', 'Dairy & eggs', 'Bakery', 'Pantry', 'Frozen'];
 
 export default function Pantry() {
+  const { returnTo } = useLocalSearchParams<{ returnTo?: string }>();
   const pantry = useStore((s) => s.pantry);
   const toggle = useStore((s) => s.togglePantry);
   const keys = Object.keys(INGREDIENTS);
+  const returnPath = returnTo === 'grocery' ? '/grocery' : '/meals';
+
+  useEffect(() => {
+    if (returnTo !== 'meals' && returnTo !== 'grocery') router.replace('/meals');
+  }, [returnTo]);
+
   return (
-    <Screen title="Pantry" subtitle="What you already have comes off the grocery list" back={() => router.back()}>
+    <Screen
+      title="Pantry"
+      subtitle="What you already have comes off the grocery list"
+      back={() => router.replace(returnPath)}>
       <View style={{ gap: 14 }}>
         {AISLES.map((aisle) => (
           <Card key={aisle} style={{ gap: 10 }}>

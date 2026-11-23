@@ -1,8 +1,9 @@
 import 'react-native-url-polyfill/auto';
 
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
+
+import { authStorage } from './authStorage';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
@@ -24,15 +25,19 @@ function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit) {
   });
 }
 
+export function isSupabaseConfigured(): boolean {
+  return !!supabaseUrl && !!supabaseAnonKey && !supabaseAnonKey.startsWith('replace_with_');
+}
+
 export function getSupabaseClient(): SupabaseClient {
-  if (!supabaseUrl || !supabaseAnonKey || supabaseAnonKey.startsWith('replace_with_')) {
+  if (!isSupabaseConfigured() || !supabaseUrl || !supabaseAnonKey) {
     throw new Error('Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and your publishable/anon key in .env, then restart Expo.');
   }
 
   if (!client) {
     client = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
-        storage: AsyncStorage,
+        storage: authStorage,
         autoRefreshToken: true,
         persistSession: true,
         detectSessionInUrl: false,

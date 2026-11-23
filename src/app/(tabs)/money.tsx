@@ -1,9 +1,9 @@
 import { router } from 'expo-router';
 import { useMemo, useState } from 'react';
-import { View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 
 import { ForecastChart, HeatStrip, SpendBars } from '@/components/charts';
-import { AmountInput, Button, Card, Chip, Divider, EmptyState, Field, Icon, IconButton, ListRow, Pill, ProgressBar, Row, Screen, Section, Segmented, Sheet, Txt, useCurrency } from '@/components/ui';
+import { AmountInput, Button, Card, Chip, Divider, EmptyState, Field, Group, Icon, IconButton, ListRow, Pill, ProgressBar, Row, Screen, Section, Segmented, Separated, Sheet, Txt, useCurrency } from '@/components/ui';
 import { useInsights } from '@/hooks/useInsights';
 import {
   CATEGORY_ICON,
@@ -22,7 +22,7 @@ import { money, PRICE_FACTOR } from '@/lib/format';
 import { planCost } from '@/lib/mealPlanner';
 import type { Category, Transaction } from '@/store/types';
 import { useStore, type AppData } from '@/store/useStore';
-import { useTheme } from '@/theme';
+import { space, useTheme } from '@/theme';
 
 type Tab = 'overview' | 'transactions' | 'documents';
 
@@ -51,17 +51,18 @@ function Overview({ data: s }: { data: AppData }) {
   const currency = useCurrency();
   const fmt = (n: number) => money(n, currency);
   const insights = useInsights();
-  const f = useMemo(() => forecastMonth(s.income, s.bills, s.goals, s.transactions, s.weeklyFoodBudget), [s.income, s.bills, s.goals, s.transactions, s.weeklyFoodBudget]);
-  const weeks = lastNWeeks(6).map((ws) => {
+  const asOf = today();
+  const f = useMemo(() => forecastMonth({ income: s.income, bills: s.bills, goals: s.goals, transactions: s.transactions, weeklyFoodBudget: s.weeklyFoodBudget, asOf }), [s.income, s.bills, s.goals, s.transactions, s.weeklyFoodBudget, asOf]);
+  const weeks = lastNWeeks(6, asOf).map((ws) => {
     const rec = s.weekHistory.find((w) => w.weekStart === ws);
     const isCurrent = s.plan?.weekStart === ws;
     const plan = rec?.estimate ?? (isCurrent && s.plan ? planCost(s.plan.days, s.profile.householdSize, s.pantry.map((p) => p.key), currency) * planCoverage(s.plan) : 0);
     return { label: shortDate(ws), actual: spend(s.transactions, ws, addDays(ws, 7), FOOD), plan };
   });
-  const risky = riskyDays(s.transactions, 50 * PRICE_FACTOR[currency]);
+  const risky = riskyDays({ transactions: s.transactions, asOf, plan: s.plan, bills: s.bills, minAmount: 50 * PRICE_FACTOR[currency] });
   const worst = [...risky].sort((a, b) => b.avg - a.avg)[0];
-  const avgs = categoryAverages(s.transactions);
-  const ms = monthStart();
+  const avgs = categoryAverages(s.transactions, asOf);
+  const ms = monthStart(asOf);
   const subs = s.bills.filter((b) => b.isSubscription);
   const fixed = s.bills.filter((b) => !b.isSubscription);
 
@@ -82,11 +83,12 @@ function Overview({ data: s }: { data: AppData }) {
         <Txt v="label" color={tone('green').fg}>
           Projected end of month
         </Txt>
-        <Txt v="hero" color={f.projectedEnd < 0 ? c.destructive : c.text}>
+        {/* A projected shortfall is a warning, not an error: amber, never alarm red */}
+        <Txt v="hero" color={f.projectedEnd < 0 ? c.amber : c.text}>
           {fmt(Math.round(f.projectedEnd / 10) * 10)}
         </Txt>
-        <Txt muted>
-          give or take {fmt(Math.round(f.band / 10) * 10)} · based on your bills and your own spending pattern
+        <Txt v="small" muted>
+          give or take {fmt(Math.round(f.band / 10) * 10)} · from your bills and your own spending pattern
         </Txt>
         <ForecastChart points={f.points} bills={f.billMarkers} band={f.band} />
         <Row gap={14} wrap>
@@ -109,36 +111,47 @@ function Overview({ data: s }: { data: AppData }) {
             </Txt>
           </Row>
         </Row>
-        <Divider />
-        {[
-          { l: 'Income', v: f.income, icon: 'arrow-down-circle-outline', t: 'green' as const },
-          { l: 'Fixed bills', v: -f.bills, icon: 'calendar-outline', t: 'amber' as const },
-          { l: 'Goals & savings', v: -f.goals, icon: 'leaf-outline', t: 'blue' as const },
-          { l: `Flexible spending (${fmt(f.spentSoFar)} so far)`, v: -f.dynamic, icon: 'basket-outline', t: 'gray' as const },
-        ].map((r) => (
-          <Row key={r.l} gap={10} style={{ paddingVertical: 4 }}>
-            <Icon name={r.icon} size={18} color={tone(r.t).fg} />
-            <Txt style={{ flex: 1 }}>{r.l}</Txt>
-            <Txt v="bodyStrong" tabular>
-              {money(Math.round(r.v), currency, { sign: r.v > 0 })}
-            </Txt>
-          </Row>
-        ))}
+        <View style={{ marginTop: space.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.separator }}>
+          <Separated>
+            {[
+              { l: 'Income', sub: 'this month', v: f.income, icon: 'arrow-down', t: 'green' as const },
+              { l: 'Fixed bills', sub: `${s.bills.filter((b) => b.active).length} active`, v: -f.bills, icon: 'calendar', t: 'amber' as const },
+              { l: 'Goals & savings', sub: 'committed each month', v: -f.goals, icon: 'leaf', t: 'blue' as const },
+              { l: 'Flexible spending', sub: `${fmt(f.spentSoFar)} so far`, v: -f.dynamic, icon: 'basket', t: 'gray' as const },
+            ].map((r) => (
+              <ListRow
+                key={r.l}
+                icon={r.icon}
+                iconTone={r.t}
+                title={r.l}
+                subtitle={r.sub}
+                right={
+                  <Txt v="bodyStrong" tabular>
+                    {money(Math.round(r.v), currency, { sign: r.v > 0 })}
+                  </Txt>
+                }
+              />
+            ))}
+          </Separated>
+        </View>
       </Card>
 
       {insights.length ? (
-        <Card style={{ marginTop: 14 }} onPress={() => router.push('/insights')} accessibilityLabel={`${insights.length} insights`}>
-          <Row gap={10}>
-            <Icon name="sparkles-outline" color={c.amber} />
-            <Txt v="bodyStrong" style={{ flex: 1 }}>
-              {insights.length} way{insights.length === 1 ? '' : 's'} to find money this month
-            </Txt>
-            {insights.some((i) => i.type !== 'reallocation') ? (
-              <Pill label={`≈ ${fmt(insights.filter((i) => i.type !== 'reallocation').reduce((a, i) => a + i.amountMonthly, 0))}/mo`} tone="green" />
-            ) : null}
-            <Icon name="chevron-forward" size={18} color={c.textFaint} />
-          </Row>
-        </Card>
+        <Group style={{ marginTop: space.sm }}>
+          <ListRow
+            icon="sparkles"
+            iconTone="green"
+            title={`${insights.length} way${insights.length === 1 ? '' : 's'} to find money`}
+            subtitle="Ranked by money found for the least effort"
+            right={
+              insights.some((i) => i.type !== 'reallocation') ? (
+                <Pill label={`≈ ${fmt(insights.filter((i) => i.type !== 'reallocation').reduce((a, i) => a + i.amountMonthly, 0))}/mo`} tone="green" />
+              ) : undefined
+            }
+            chevron
+            onPress={() => router.push('/insights')}
+          />
+        </Group>
       ) : null}
 
       <Section title="Food: actual vs plan">
@@ -209,11 +222,15 @@ function Overview({ data: s }: { data: AppData }) {
       </Section>
 
       <Section title="Subscriptions & bills">
-        <Card padded={false} style={{ paddingHorizontal: 14, paddingVertical: 4 }}>
-          {s.bills.length === 0 ? <EmptyState icon="calendar-outline" title="No bills yet" body="Add a bank statement and we’ll find your recurring bills and subscriptions." /> : null}
-          {[...subs, ...fixed].map((b, i) => (
-            <View key={b.id}>
+        {s.bills.length === 0 ? (
+          <Card>
+            <EmptyState icon="calendar-outline" title="No bills yet" body="Add a bank statement and we’ll find your recurring bills and subscriptions." />
+          </Card>
+        ) : null}
+        <Group>
+          {[...subs, ...fixed].map((b) => (
               <ListRow
+                key={b.id}
                 icon={b.isSubscription ? 'repeat-outline' : 'calendar-outline'}
                 iconTone={b.isSubscription ? 'blue' : 'amber'}
                 title={b.name}
@@ -226,10 +243,8 @@ function Overview({ data: s }: { data: AppData }) {
                   ) : null
                 }
               />
-              {i < s.bills.length - 1 ? <Divider style={{ marginVertical: 0 }} /> : null}
-            </View>
           ))}
-        </Card>
+        </Group>
         {subs.length ? (
           <Txt v="caption" muted style={{ marginTop: 8 }}>
             Marking a subscription cancelled sends what it cost to your Found Money inbox. Remember to cancel with the provider too.

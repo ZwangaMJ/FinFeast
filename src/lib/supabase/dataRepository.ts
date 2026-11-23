@@ -14,6 +14,7 @@ import type {
 } from '@/store/types';
 import { initialData, type AppData } from '@/store/useStore';
 import { getSupabaseClient } from './client';
+import { groceryFromRow, mealFromRow, type GroceryRow, type MealRow } from './foodRows';
 
 type Row = Record<string, unknown>;
 type Numeric = number | string;
@@ -180,6 +181,8 @@ export const supabaseDataRepository = {
       loadAllRows(client.from('found_money').select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: false }), 'load found money'),
       loadAllRows(client.from('found_money_allocations').select('*', { count: 'exact' }).eq('user_id', userId), 'load found money allocations'),
       loadAllRows(client.from('week_history').select('*', { count: 'exact' }).eq('user_id', userId).order('week_start', { ascending: false }), 'load week history'),
+      loadAllRows(client.from('meals').select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: true }), 'load meals'),
+      loadAllRows(client.from('groceries').select('*', { count: 'exact' }).eq('user_id', userId).order('created_at', { ascending: true }), 'load groceries'),
     ]);
 
     const [
@@ -198,6 +201,8 @@ export const supabaseDataRepository = {
       foundMoneyRows,
       allocations,
       weekHistoryRows,
+      mealRows,
+      groceryRows,
     ] = results;
 
     assertNoError(profileResult.error, 'load profile');
@@ -355,6 +360,8 @@ export const supabaseDataRepository = {
       pendingReason: pendingPlan?.pending_reason ?? null,
       pantry,
       groceryChecked: appState?.grocery_checked ?? [],
+      meals: rows(mealRows as unknown as (Row & MealRow)[]).map(mealFromRow),
+      groceries: rows(groceryRows as unknown as (Row & GroceryRow)[]).map(groceryFromRow),
       tried: appState?.tried_recipes ?? initialData.tried,
       goals,
       foundMoney,
@@ -367,9 +374,18 @@ export const supabaseDataRepository = {
     };
   },
 
-  async save(data: AppData): Promise<void> {
-    const { error } = await getSupabaseClient().rpc('replace_user_data', { p_data: data });
+  async save(data: AppData, userId: string): Promise<void> {
+    const client = getSupabaseClient();
+    const { data: sessionData, error: sessionError } = await client.auth.getSession();
+    assertNoError(sessionError, 'verify active account');
+    if (sessionData.session?.user.id !== userId) throw new Error('Your account changed before your data could be saved. Please sign in again.');
+
+    const { error } = await client.rpc('replace_user_data', { p_data: data });
     assertNoError(error, 'save user data');
+
+    // Meals and groceries reference the profile row written above, so they save second.
+    const { error: foodError } = await client.rpc('replace_user_food', { p_meals: data.meals ?? [], p_groceries: data.groceries ?? [] });
+    assertNoError(foodError, 'save meals and groceries');
   },
 
   async delete(userId: string): Promise<void> {
