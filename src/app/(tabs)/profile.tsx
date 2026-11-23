@@ -2,11 +2,13 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { Platform, Share, View } from 'react-native';
 
+import { AccountSettings } from '@/components/AccountSettings';
+import { RecurringExpenseList } from '@/components/RecurringExpenses';
 import { AmountInput, Button, Card, Chip, Divider, Icon, ListRow, Pill, Row, Screen, Section, Segmented, Sheet, Stepper, ToggleRow, Txt, useCurrency } from '@/components/ui';
 import { CURRENCY_LABELS, money } from '@/lib/format';
 import type { Allergen, Currency, DietPattern, ThemeMode } from '@/store/types';
-import { exportData, useStore } from '@/store/useStore';
 import { useAuthStore } from '@/store/useAuthStore';
+import { exportData, useStore } from '@/store/useStore';
 import { useTheme } from '@/theme';
 
 const DIETS: { v: DietPattern; l: string }[] = [
@@ -41,11 +43,8 @@ export default function Profile() {
   const p = s.profile;
   const [edit, setEdit] = useState<null | 'income' | 'food'>(null);
   const [draft, setDraft] = useState('');
-  const [confirmDelete, setConfirmDelete] = useState(false);
   const [exported, setExported] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [signingOut, setSigningOut] = useState(false);
-  const [accountError, setAccountError] = useState<string | null>(null);
+  const email = useAuthStore((state) => state.email);
   const toggleAllergy = (a: Allergen) => s.setProfile({ allergies: p.allergies.includes(a) ? p.allergies.filter((x) => x !== a) : [...p.allergies, a] });
 
   return (
@@ -59,7 +58,9 @@ export default function Profile() {
           </View>
           <View style={{ flex: 1 }}>
             <Txt v="h2">{p.name || 'Your profile'}</Txt>
-            <Txt v="small" muted>{p.email || 'Signed in'}</Txt>
+            <Txt v="small" muted>
+              {email}
+            </Txt>
           </View>
           {s.manualMode ? <Pill label="Manual mode" tone="amber" /> : <Pill label="Document mode" tone="green" />}
         </Row>
@@ -135,6 +136,10 @@ export default function Profile() {
           <ListRow icon="document-text-outline" iconTone="blue" title="Documents" subtitle={`${s.documents.filter((d) => d.status === 'confirmed').length} added`} chevron onPress={() => router.push('/upload')} />
         </Card>
         <Txt v="bodyStrong" style={{ marginTop: 14, marginBottom: 8 }}>
+          Recurring expenses & bills
+        </Txt>
+        <RecurringExpenseList />
+        <Txt v="bodyStrong" style={{ marginTop: 14, marginBottom: 8 }}>
           Currency & region
         </Txt>
         <Row gap={8} wrap>
@@ -176,9 +181,9 @@ export default function Profile() {
       <Section title="Security & your data">
         <Card tone="green" style={{ gap: 10 }}>
           {[
-            ['lock-closed-outline', 'Your account is protected by email and password sign-in. Your cloud records are restricted to your signed-in account.'],
-            ['eye-off-outline', 'Payslip and bank statement PDFs are read on this device; the extracted records sync to your account.'],
-            ['phone-portrait-outline', 'App data is cached on this device while signed in; the cache is not separately encrypted. Sign out to remove it.'],
+            ['lock-closed-outline', 'Your data is saved to your FinFeast account. Only you can read it once you sign in.'],
+            ['eye-off-outline', 'Payslip and bank statement PDFs are read on this device; only the extracted figures are saved to your account. Receipt and tax-form extraction are not available yet.'],
+            ['phone-portrait-outline', 'A copy is kept on this device while you’re signed in, and removed when you sign out.'],
             ['ban-outline', 'Never sold. No third-party ad tracking.'],
           ].map(([icon, text]) => (
             <Row key={text} gap={10} style={{ alignItems: 'flex-start' }}>
@@ -199,30 +204,15 @@ export default function Profile() {
               setExported(true);
             }}
           />
-          {accountError ? <Txt v="small" color={tone('red').fg}>{accountError}</Txt> : null}
-          <Button
-            label={signingOut ? 'Signing out…' : 'Sign out'}
-            icon="log-out-outline"
-            variant="secondary"
-            disabled={signingOut || deleting}
-            onPress={async () => {
-              setSigningOut(true);
-              setAccountError(null);
-              try {
-                await useAuthStore.getState().signOut();
-              } catch (error) {
-                setAccountError(error instanceof Error ? error.message : 'Could not sign out. Please try again.');
-              } finally {
-                setSigningOut(false);
-              }
-            }}
-          />
-          <Button label="Delete all my data" icon="trash-outline" variant="destructive" disabled={deleting} onPress={() => setConfirmDelete(true)} />
         </View>
       </Section>
 
+      <Section title="Account">
+        <AccountSettings />
+      </Section>
+
       <Txt v="caption" muted center style={{ marginTop: 26 }}>
-        FinFeast prototype · data syncs to your account. FinFeast is not a licensed financial adviser.
+        FinFeast prototype · data is saved to your account. FinFeast is not a licensed financial adviser.
       </Txt>
 
       <Sheet
@@ -251,35 +241,6 @@ export default function Profile() {
         ) : null}
       </Sheet>
 
-      <Sheet
-        visible={confirmDelete}
-        onClose={() => setConfirmDelete(false)}
-        title="Delete everything?"
-        footer={
-          <>
-            <Button
-              label="Permanently delete my data"
-              variant="destructive"
-              disabled={deleting}
-              onPress={async () => {
-                setDeleting(true);
-                setAccountError(null);
-                try {
-                  await useAuthStore.getState().deleteAllData();
-                  setConfirmDelete(false);
-                  router.replace('/onboarding');
-                } catch (error) {
-                  setAccountError(error instanceof Error ? error.message : 'Could not delete your data. Please try again.');
-                } finally {
-                  setDeleting(false);
-                }
-              }}
-            />
-            <Button label="Cancel" variant="ghost" tone="gray" onPress={() => setConfirmDelete(false)} />
-          </>
-        }>
-        <Txt muted>This permanently deletes your documents, transactions, plans, goals and settings from your account and this device. Export first if you’d like a copy.</Txt>
-      </Sheet>
     </Screen>
   );
 }

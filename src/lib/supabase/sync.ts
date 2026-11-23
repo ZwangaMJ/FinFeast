@@ -80,6 +80,7 @@ export function startCloudSync(userId: string): () => void {
 
 export function stopCloudSync(): void {
   activeStop?.();
+  useDataSyncStatus.setState({ status: 'saved', error: null });
 }
 
 export async function flushCloudSync(): Promise<boolean> {

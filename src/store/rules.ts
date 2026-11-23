@@ -62,8 +62,8 @@ const creditAll = (goals: readonly Goal[], credits: readonly (Allocation & { sou
   credits.reduce<Goal[]>((gs, c, i) => creditGoal(gs, c.goalId, c.amount, c.source, env, i), [...goals]);
 
 /** Creates (or re-targets, while still untouched) the Emergency Fund from essentials. */
-export function ensureEmergencyGoal(s: Pick<AppData, 'bills' | 'weeklyFoodBudget' | 'goals'>, env: Env): Goal[] {
-  const target = emergencyTarget(s.bills, s.weeklyFoodBudget);
+export function ensureEmergencyGoal(s: Pick<AppData, 'recurringExpenses' | 'weeklyFoodBudget' | 'goals'>, env: Env): Goal[] {
+  const target = emergencyTarget(s.recurringExpenses, s.weeklyFoodBudget);
   const existing = s.goals.find((g) => g.type === 'emergency');
   if (target <= 0) return s.goals;
   if (existing) return s.goals.map((g) => (g.id === existing.id && g.contributions.length === 0 && g.current === 0 ? { ...g, target } : g));
@@ -209,7 +209,7 @@ export const monthEndCheck = (env: Env) => (s: AppData): AppData => {
   const ms = monthStart(env.today);
   if ((s.lastMonthProcessed ?? ms) >= ms) return s;
   const prevStart = monthStart(addDays(ms, -1));
-  const unallocated = flexibleMonthly(s.income, s.bills, s.goals) - spend(s.transactions, prevStart, ms);
+  const unallocated = flexibleMonthly(s.income, s.recurringExpenses, s.goals) - spend(s.transactions, prevStart, ms);
   const triggers = s.goals.flatMap((g) => g.rules.filter((r) => r.kind === 'threshold' && r.enabled && r.amount && unallocated > r.amount));
   const money2 = triggers.reduce<MoneyPatch>(
     (acc, _r, i) =>

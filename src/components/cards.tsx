@@ -74,7 +74,7 @@ export function HeroCard({
   );
 }
 
-const INSIGHT_TONE: Record<Insight['type'], Tone> = { subscription: 'blue', dining: 'amber', grocery: 'green', waste: 'green', reallocation: 'blue', velocity: 'amber' };
+const INSIGHT_TONE: Record<Insight['type'], Tone> = { subscription: 'blue', creep: 'amber', fixed_costs: 'gray', dining: 'amber', grocery: 'green', waste: 'green', reallocation: 'blue' };
 
 export function InsightCard({ insight, compact }: { insight: Insight; compact?: boolean }) {
   const { tone } = useTheme();
@@ -86,6 +86,7 @@ export function InsightCard({ insight, compact }: { insight: Insight; compact?: 
     if (insight.action.kind === 'plan') router.navigate('/meals');
     if (insight.action.kind === 'swap') router.navigate('/meals');
     if (insight.action.kind === 'assign' || insight.action.kind === 'cancel') router.navigate('/goals');
+    if (insight.action.kind === 'review') router.navigate('/money');
   };
   return (
     <Card style={{ gap: 10 }}>

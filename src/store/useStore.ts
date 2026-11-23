@@ -5,6 +5,7 @@
 import { create } from 'zustand';
 
 import { RECIPES } from '@/data/recipes';
+import { splitRecurringSuggestions } from '@/lib/bankStatement';
 import { setUserMeals } from '@/lib/catalog';
 import { monthStart, weekStart } from '@/lib/dates';
 import { scopeEnv } from '@/lib/env';
@@ -12,6 +13,7 @@ import { money } from '@/lib/format';
 import type { Insight } from '@/lib/insights';
 import { planOrFallback, regenerateDay, regenerateSlot, relinkBatches, withAllSwaps } from '@/lib/mealPlanner';
 import type { ExtractionResult } from '@/lib/parser';
+import { monthlyAmount } from '@/lib/recurring';
 import {
   addFoundMoney,
   allocateFoundMoney,
@@ -28,20 +30,26 @@ import {
 import * as food from './food';
 import type { GroceryInput, MealInput } from './food';
 import { systemEnv, uid } from './systemEnv';
-import { MEAL_SLOTS, type AppData, type Category, type DocRecord, type FoodImageRef, type FoundMoney, type Goal, type MealPlan, type MealSlot, type Profile, type Rule, type Settings, type Transaction } from './types';
+import { MEAL_SLOTS, type AppData, type Category, type DocRecord, type FoodImageRef, type FoundMoney, type Goal, type MealPlan, type MealSlot, type Profile, type RecurringExpense, type Rule, type Settings, type Transaction } from './types';
 
 export { uid };
 export type { AppData };
 
 export type ReviewEdits = {
   net?: number;
-  rejectedBillIds?: string[];
+  rejectedRecurringIds?: string[];
+  /** Category / essential changes made to detected recurring expenses during review. */
+  recurringEdits?: Record<string, Partial<Pick<RecurringExpense, 'category' | 'isEssential'>>>;
+  /** Saved recurring expense id → the newer amount seen on the statement. */
+  recurringAmountUpdates?: Record<string, number>;
   weeklyFood?: number;
   savingsMonthly?: number;
   receiptCategory?: Category;
   receiptTotal?: number;
   answers?: Record<string, Category>;
 };
+
+export type RecurringExpenseInput = Omit<RecurringExpense, 'id' | 'active'> & { active?: boolean };
 
 type Actions = {
   setProfile: (p: Partial<Profile>) => void;
@@ -94,8 +102,11 @@ type Actions = {
   addFoundMoney: (fm: Omit<FoundMoney, 'id' | 'createdAt' | 'status'>) => void;
   allocateFoundMoney: (id: string, allocations: { goalId: string; amount: number }[]) => void;
   keepFoundMoney: (id: string) => void;
-  cancelBill: (billId: string) => void;
-  toggleBill: (billId: string) => void;
+  addRecurringExpense: (e: RecurringExpenseInput) => string;
+  updateRecurringExpense: (id: string, patch: Partial<Omit<RecurringExpense, 'id'>>) => void;
+  removeRecurringExpense: (id: string) => void;
+  cancelRecurringExpense: (id: string) => void;
+  toggleRecurringExpense: (id: string) => void;
   dismissInsight: (id: string) => void;
   actOnInsight: (i: Insight) => void;
 
@@ -122,7 +133,7 @@ export const initialData: AppData = {
   manualMode: false,
   income: null,
   weeklyFoodBudget: 0,
-  bills: [],
+  recurringExpenses: [],
   transactions: [],
   documents: [],
   plan: null,
@@ -145,7 +156,7 @@ export const initialData: AppData = {
 
 export const useStore = create<AppData & Actions>()((set, get) => {
       const data = (): AppData => getAppData(get());
-      const ensureEmergency = (s: Pick<AppData, 'bills' | 'weeklyFoodBudget' | 'goals'>) => ensureEmergencyGoal(s, systemEnv());
+      const ensureEmergency = (s: Pick<AppData, 'recurringExpenses' | 'weeklyFoodBudget' | 'goals'>) => ensureEmergencyGoal(s, systemEnv());
       const foundMoney = (input: FoundMoneyInput) => set((s) => addFoundMoney(s, input, systemEnv()));
 
       return {
@@ -196,14 +207,21 @@ export const useStore = create<AppData & Actions>()((set, get) => {
             }
           }
           if (r.documentType === 'bank_statement') {
-            const rejected = edits.rejectedBillIds ?? [];
-            const bills = r.recurringBills.filter((b) => !rejected.includes(b.id));
-            const known = new Set(s.bills.map((b) => b.name.toLowerCase()));
+            const rejected = edits.rejectedRecurringIds ?? [];
+            const reviewed = r.recurringExpenses
+              .filter((e) => !rejected.includes(e.id))
+              .map((e) => ({ ...e, ...(edits.recurringEdits?.[e.id] ?? {}) }));
+            // Re-check against what is saved now: the list may have changed since the review opened.
+            const { fresh } = splitRecurringSuggestions(reviewed, s.recurringExpenses);
+            const amountUpdates = edits.recurringAmountUpdates ?? {};
             const answers = edits.answers ?? {};
             const tx = r.transactions.map((t) => (answers[t.id] ? { ...t, category: answers[t.id], confidence: 'high' as const, question: undefined } : t));
             next = {
               ...next,
-              bills: [...s.bills, ...bills.filter((b) => !known.has(b.name.toLowerCase()))],
+              recurringExpenses: [
+                ...s.recurringExpenses.map((e) => (amountUpdates[e.id] > 0 ? { ...e, amount: amountUpdates[e.id] } : e)),
+                ...fresh,
+              ],
               transactions: [...tx, ...s.transactions.filter((t) => t.sourceDocId !== doc.id)].sort((a, b) => b.date.localeCompare(a.date)),
               weeklyFoodBudget: edits.weeklyFood ?? s.weeklyFoodBudget,
               manualMode: false,
@@ -232,7 +250,7 @@ export const useStore = create<AppData & Actions>()((set, get) => {
           }
           if (r.taxForm) next.taxInfo = r.taxForm;
           set(next);
-          if (doc.type === 'payslip') set((st) => ({ goals: ensureEmergency(st), manualMode: st.bills.length === 0 ? st.manualMode : false }));
+          if (doc.type === 'payslip') set((st) => ({ goals: ensureEmergency(st), manualMode: st.recurringExpenses.length === 0 ? st.manualMode : false }));
         },
 
         addFailedDocument: (doc) => set((s) => ({ documents: [{ ...doc, status: 'failed' }, ...s.documents.filter((d) => d.id !== doc.id)] })),
@@ -393,23 +411,42 @@ export const useStore = create<AppData & Actions>()((set, get) => {
         },
         keepFoundMoney: (id) => set((s) => ({ foundMoney: s.foundMoney.map((f) => (f.id === id ? { ...f, status: 'kept' } : f)) })),
 
-        cancelBill: (billId) => {
+        addRecurringExpense: (input) => {
+          const id = uid();
+          set((s) => {
+            const recurringExpenses = [...s.recurringExpenses, { ...input, id, active: input.active ?? true }];
+            return { recurringExpenses, goals: s.onboarded ? ensureEmergency({ ...s, recurringExpenses }) : s.goals };
+          });
+          return id;
+        },
+        updateRecurringExpense: (id, patch) =>
+          set((s) => {
+            const recurringExpenses = s.recurringExpenses.map((e) => (e.id === id ? { ...e, ...patch, id } : e));
+            return { recurringExpenses, goals: s.onboarded ? ensureEmergency({ ...s, recurringExpenses }) : s.goals };
+          }),
+        removeRecurringExpense: (id) =>
+          set((s) => {
+            const recurringExpenses = s.recurringExpenses.filter((e) => e.id !== id);
+            return { recurringExpenses, goals: s.onboarded ? ensureEmergency({ ...s, recurringExpenses }) : s.goals };
+          }),
+        cancelRecurringExpense: (id) => {
           const s = get();
-          const bill = s.bills.find((b) => b.id === billId);
-          if (!bill) return;
-          set({ bills: s.bills.map((b) => (b.id === billId ? { ...b, active: false } : b)) });
+          const expense = s.recurringExpenses.find((e) => e.id === id);
+          if (!expense || !expense.active) return;
+          set({ recurringExpenses: s.recurringExpenses.map((e) => (e.id === id ? { ...e, active: false } : e)) });
+          const monthly = Math.round(monthlyAmount(expense) * 100) / 100;
           foundMoney({
-            amount: bill.amount,
-            headline: `${money(bill.amount, s.profile.currency)}/mo freed from ${bill.name}`,
-            source: `You cancelled ${bill.name} — that's ${money(bill.amount * 12, s.profile.currency)} a year back.`,
+            amount: monthly,
+            headline: `${money(monthly, s.profile.currency)}/mo freed from ${expense.name}`,
+            source: `You cancelled ${expense.name} — that's ${money(monthly * 12, s.profile.currency)} a year back.`,
             kind: 'subscription',
           });
         },
-        toggleBill: (billId) => set((s) => ({ bills: s.bills.map((b) => (b.id === billId ? { ...b, active: !b.active } : b)) })),
+        toggleRecurringExpense: (id) => set((s) => ({ recurringExpenses: s.recurringExpenses.map((e) => (e.id === id ? { ...e, active: !e.active } : e)) })),
 
         dismissInsight: (id) => set((s) => ({ dismissedInsights: [...s.dismissedInsights, id] })),
         actOnInsight: (i) => {
-          if (i.action.kind === 'cancel' && i.action.billId) get().cancelBill(i.action.billId);
+          if (i.action.kind === 'cancel' && i.action.expenseId) get().cancelRecurringExpense(i.action.expenseId);
           if (i.action.kind === 'swap') get().applyAllSwaps();
           if (i.action.kind === 'assign' && i.action.amount) {
             const s = get();
@@ -444,7 +481,7 @@ export function getAppData(state: AppData & Actions = useStore.getState()): AppD
     manualMode: state.manualMode,
     income: state.income,
     weeklyFoodBudget: state.weeklyFoodBudget,
-    bills: state.bills,
+    recurringExpenses: state.recurringExpenses,
     transactions: state.transactions,
     documents: state.documents,
     plan: state.plan,

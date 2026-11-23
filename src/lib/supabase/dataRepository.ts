@@ -1,5 +1,4 @@
 import type {
-  Bill,
   DocRecord,
   FoundMoney,
   Goal,
@@ -7,6 +6,7 @@ import type {
   MealPlan,
   PantryItem,
   Profile,
+  RecurringExpense,
   Rule,
   Settings,
   Transaction,
@@ -54,15 +54,17 @@ type AppStateRow = Row & {
   dismissed_insights: string[];
   assigned_weeks: string[];
 };
-type BillRow = Row & {
+type RecurringExpenseRow = Row & {
   id: string;
   name: string;
   amount: Numeric;
-  day: number;
-  cadence: Bill['cadence'];
-  confidence: Bill['confidence'];
+  category: RecurringExpense['category'];
+  billing_day_of_month: number;
+  frequency: RecurringExpense['frequency'];
+  is_essential: boolean;
+  source: RecurringExpense['source'];
   active: boolean;
-  is_subscription: boolean;
+  confidence: NonNullable<RecurringExpense['confidence']> | null;
   usage_note: string | null;
   months_paid: number | null;
 };
@@ -170,7 +172,7 @@ export const supabaseDataRepository = {
       client.from('user_finances').select('*').eq('user_id', userId).maybeSingle(),
       client.from('user_income').select('*').eq('user_id', userId).maybeSingle(),
       client.from('user_app_state').select('*').eq('user_id', userId).maybeSingle(),
-      loadAllRows(client.from('bills').select('*', { count: 'exact' }).eq('user_id', userId), 'load bills'),
+      loadAllRows(client.from('recurring_expenses').select('*', { count: 'exact' }).eq('user_id', userId), 'load recurring expenses'),
       loadAllRows(client.from('documents').select('*', { count: 'exact' }).eq('user_id', userId), 'load documents'),
       loadAllRows(client.from('transactions').select('*', { count: 'exact' }).eq('user_id', userId).order('transaction_date', { ascending: false }), 'load transactions'),
       loadAllRows(client.from('meal_plans').select('*', { count: 'exact' }).eq('user_id', userId), 'load meal plans'),
@@ -190,7 +192,7 @@ export const supabaseDataRepository = {
       financesResult,
       incomeResult,
       appStateResult,
-      bills,
+      recurringExpenses,
       documents,
       transactions,
       mealPlans,
@@ -216,15 +218,17 @@ export const supabaseDataRepository = {
     const finance = financesResult.data as FinanceRow | null;
     const storedIncome = incomeResult.data as IncomeRow | null;
     const appState = appStateResult.data as AppStateRow | null;
-    const billsData: Bill[] = rows(bills as BillRow[]).map((row) => ({
+    const recurringExpensesData: RecurringExpense[] = rows(recurringExpenses as RecurringExpenseRow[]).map((row) => ({
       id: row.id,
       name: row.name,
       amount: amount(row.amount),
-      day: row.day,
-      cadence: row.cadence,
-      confidence: row.confidence,
+      category: row.category,
+      billingDayOfMonth: row.billing_day_of_month,
+      frequency: row.frequency,
+      isEssential: row.is_essential,
+      source: row.source,
       active: row.active,
-      isSubscription: row.is_subscription,
+      ...(row.confidence ? { confidence: row.confidence } : {}),
       ...(row.usage_note ? { usageNote: row.usage_note } : {}),
       ...(row.months_paid === null ? {} : { monthsPaid: row.months_paid }),
     }));
@@ -352,7 +356,7 @@ export const supabaseDataRepository = {
       manualMode: profile.manual_mode,
       income,
       weeklyFoodBudget: finance ? amount(finance.weekly_food_budget) : initialData.weeklyFoodBudget,
-      bills: billsData,
+      recurringExpenses: recurringExpensesData,
       transactions: transactionsData,
       documents: documentsData,
       plan: (currentPlan?.plan as MealPlan | undefined) ?? null,
@@ -374,12 +378,15 @@ export const supabaseDataRepository = {
     };
   },
 
+  // replace_user_data writes for auth.uid(), so refuse to save if the signed-in
+  // account changed after this data was loaded (e.g. a sign-out in another tab).
   async save(data: AppData, userId: string): Promise<void> {
     const client = getSupabaseClient();
     const { data: sessionData, error: sessionError } = await client.auth.getSession();
-    assertNoError(sessionError, 'verify active account');
-    if (sessionData.session?.user.id !== userId) throw new Error('Your account changed before your data could be saved. Please sign in again.');
-
+    assertNoError(sessionError, 'verify the signed-in account');
+    if (sessionData.session?.user.id !== userId) {
+      throw new Error('Your account changed before your data could be saved. Please sign in again.');
+    }
     const { error } = await client.rpc('replace_user_data', { p_data: data });
     assertNoError(error, 'save user data');
 
@@ -388,8 +395,9 @@ export const supabaseDataRepository = {
     assertNoError(foodError, 'save meals and groceries');
   },
 
-  async delete(userId: string): Promise<void> {
-    const { error } = await getSupabaseClient().from('user_profiles').delete().eq('user_id', userId);
-    assertNoError(error, 'delete user data');
+  // Deletes the signed-in user from auth.users; every data row cascades with it.
+  async deleteAccount(): Promise<void> {
+    const { error } = await getSupabaseClient().rpc('delete_my_account');
+    assertNoError(error, 'delete your account');
   },
 };

@@ -799,6 +799,7 @@ export function Field({
   secure,
   autoComplete,
   textContentType,
+  onSubmit,
 }: {
   value: string;
   onChange: (s: string) => void;
@@ -807,8 +808,9 @@ export function Field({
   keyboardType?: 'email-address' | 'number-pad' | 'default';
   autoFocus?: boolean;
   secure?: boolean;
-  autoComplete?: 'email' | 'current-password' | 'new-password' | 'off';
-  textContentType?: 'emailAddress' | 'password' | 'newPassword';
+  autoComplete?: 'email' | 'current-password' | 'new-password' | 'one-time-code' | 'off';
+  textContentType?: 'emailAddress' | 'password' | 'newPassword' | 'oneTimeCode';
+  onSubmit?: () => void;
 }) {
   const { c } = useTheme();
   // Secure fields can be revealed so people can check what their keyboard or autofill entered
@@ -836,6 +838,7 @@ export function Field({
           autoFocus={autoFocus}
           secureTextEntry={secure && !revealed}
           textContentType={textContentType}
+          onSubmitEditing={onSubmit}
           accessibilityLabel={label ?? placeholder}
           style={{ flex: 1, minHeight: 52, paddingLeft: space.md, paddingRight: secure ? 0 : space.md, fontFamily: fonts.regular, fontSize: 17, color: c.text }}
         />

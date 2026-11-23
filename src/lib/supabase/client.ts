@@ -30,7 +30,7 @@ export function isSupabaseConfigured(): boolean {
 }
 
 export function getSupabaseClient(): SupabaseClient {
-  if (!isSupabaseConfigured() || !supabaseUrl || !supabaseAnonKey) {
+  if (!supabaseUrl || !supabaseAnonKey || !isSupabaseConfigured()) {
     throw new Error('Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and your publishable/anon key in .env, then restart Expo.');
   }
 

@@ -25,7 +25,7 @@ export default function Home() {
 
   const t = today();
   const ws = weekStart(t);
-  const flexWeek = weeklyFlexible(s.income, s.bills, s.goals);
+  const flexWeek = weeklyFlexible(s.income, s.recurringExpenses, s.goals);
   const spentWeek = spend(s.transactions, ws, addDays(t, 1), VARIABLE_CATEGORIES);
   const flexLeft = flexWeek - spentWeek;
   const resetsIn = 7 - daysBetween(ws, t);
@@ -36,10 +36,10 @@ export default function Home() {
   const dayIdx = s.plan ? daysBetween(s.plan.weekStart, t) : -1;
   const todayPlan = s.plan?.days[dayIdx];
 
-  const safety = safetyNetDays(s.goals, s.bills, s.weeklyFoodBudget);
-  const risky = riskyDays({ transactions: s.transactions, asOf: t, plan: s.plan, bills: s.bills, minAmount: 50 * PRICE_FACTOR[currency] })[weekday(t)];
+  const safety = safetyNetDays(s.goals, s.recurringExpenses, s.weeklyFoodBudget);
+  const risky = riskyDays(s.transactions, 50 * PRICE_FACTOR[currency])[weekday(t)];
   const showStatementPrompt = !s.manualMode && s.documents.filter((d) => d.type === 'bank_statement' && d.status === 'confirmed' && d.addedAt.slice(0, 10) >= addDays(t, -30)).length === 0;
-  const hasFinancialData = !!s.income || s.bills.length > 0 || s.transactions.length > 0 || s.weeklyFoodBudget > 0;
+  const hasFinancialData = !!s.income || s.recurringExpenses.length > 0 || s.transactions.length > 0 || s.weeklyFoodBudget > 0;
   const hasFoodData = s.weeklyFoodBudget > 0 || s.transactions.some((transaction) => FOOD.includes(transaction.category));
   const hasGoalBalance = s.goals.some((goal) => goal.type === 'emergency' && goal.current > 0);
   const pendingFound = s.foundMoney.filter((f) => f.status === 'pending');

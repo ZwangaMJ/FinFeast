@@ -135,6 +135,55 @@ export function HeatStrip({ days, currencyFmt }: { days: readonly { day: number;
   );
 }
 
+/**
+ * One cell per day of the month: debit days are marked, and days whose projected
+ * balance drops below the buffer are flagged before they happen.
+ */
+export function MonthRiskStrip({
+  days,
+  today,
+  currencyFmt,
+}: {
+  days: { day: number; balance: number; debits: number; debitNames: string[]; risky: boolean; past: boolean }[];
+  today: number;
+  currencyFmt: (n: number) => string;
+}) {
+  const { c, tone } = useTheme();
+  const safe = days.filter((d) => Number.isFinite(d.day) && Number.isFinite(d.balance));
+  if (!safe.length) return null;
+  const label = safe
+    .filter((d) => d.debits > 0 || d.risky)
+    .map((d) => `${d.day}: ${d.debits > 0 ? `${d.debitNames.join(', ')} ${currencyFmt(d.debits)}` : ''}${d.risky ? `${d.debits > 0 ? ', ' : ''}low balance, about ${currencyFmt(d.balance)}` : ''}`)
+    .join('; ');
+  return (
+    <View accessible accessibilityLabel={label || 'No debits or low-balance days this month'} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>
+      {safe.map((d) => {
+        const bg = d.risky ? c.amberStrong : d.debits > 0 ? tone('amber').bg : c.grayWash;
+        return (
+          <View
+            key={d.day}
+            style={{
+              width: 34,
+              height: 34,
+              borderRadius: 8,
+              backgroundColor: bg,
+              opacity: d.past ? 0.45 : 1,
+              borderWidth: d.day === today ? 2 : 0,
+              borderColor: c.primary,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}>
+            <Txt v="caption" color={d.risky ? tone('amber').bg : c.text}>
+              {d.day}
+            </Txt>
+            {d.debits > 0 ? <View style={{ position: 'absolute', bottom: 3, width: 4, height: 4, borderRadius: 2, backgroundColor: d.risky ? tone('amber').bg : c.amber }} /> : null}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 /** Month cashflow line: actual-to-date solid, projection dashed, bill days marked. */
 export function ForecastChart({ points, bills, band }: { points: readonly { day: number; balance: number; actual: boolean }[]; bills: readonly { day: number }[]; band: number }) {
   const { c } = useTheme();

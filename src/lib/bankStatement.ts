@@ -1,13 +1,4 @@
-/**
- * Bank statement parsing, categorisation and anomaly detection (FNB-first).
- *
- * The core (`parseStatementText`, `parseStatementItems`) is pure: no clock reads,
- * no thrown errors — it returns a `Result`. The legacy `parseBankStatementText` /
- * `parseBankStatementItems` are thin boundary adapters that supply the current
- * year and throw, for callers that still expect exceptions.
- */
-import { err, ok, type Result } from '@/lib/fp';
-import type { Category, Confidence, Transaction } from '@/store/types';
+import type { Category, Confidence, RecurringCategory, RecurringExpense, RecurringFrequency, Transaction } from '@/store/types';
 
 export type StatementBalance = Readonly<{
   amount: number;
@@ -55,14 +46,21 @@ export type StatementTransaction = Readonly<{
   issues: readonly StatementIssue[];
 }>;
 
+export type RecurringChannel = 'debit_order' | 'eft' | 'card';
+
 export type RecurringObligation = Readonly<{
+  key: string;
   merchant: string;
-  category: 'debt' | 'fees' | 'utilities' | 'entertainment' | 'other';
-  averageAmount: number;
-  cadence: 'weekly' | 'monthly' | 'irregular';
+  category: RecurringCategory;
+  channel: RecurringChannel;
+  averageAmount: number; // median amount per debit
+  cadence: RecurringFrequency | 'irregular';
   occurrences: number;
+  months: number;
+  billingDay: number;
   firstDate: string;
   lastDate: string;
+  confidence: Confidence;
 }>;
 
 export type StatementAnomaly = Readonly<{
@@ -127,17 +125,6 @@ export type BankStatementTextItem = Readonly<{
   page?: number;
 }>;
 
-export type StatementParseError = Readonly<{
-  kind: 'no_dated_transactions' | 'no_monetary_transactions';
-  message: string;
-}>;
-
-export type StatementParseOptions = Readonly<{
-  pages?: number;
-  /** Year for rows like "01 Mar" when the statement gives no period and no prior row has a year. */
-  fallbackYear: number;
-}>;
-
 export class BankStatementPdfError extends Error {
   public reason: 'illegible' | 'unsupported';
 
@@ -168,9 +155,6 @@ const EXPLICIT_DATE =
 const AMOUNT_PATTERN =
   /(?:\bR\s*)?[-+]?(?:(?:\d{1,3}(?:[ \u00a0]\d{3})+)|(?:\d{1,3}(?:,\d{3})+)|(?:\d{1,3}(?:\.\d{3})+)|\d+)[.,]\d{2}(?:\s*(?:Cr|Dr))?/gi;
 const MONEY_TOKEN = /(?:\bR\s*)?([-+]?(?:(?:\d{1,3}(?:[ \u00a0]\d{3})+)|(?:\d{1,3}(?:,\d{3})+)|(?:\d{1,3}(?:\.\d{3})+)|\d+)[.,]\d{2})\s*(Cr|Dr)?/i;
-/** A debit order / subscription collection that was attempted but failed or was returned. */
-const FAILED_DEBIT_ORDER =
-  /(?:debicheck|debit order|edo collection|subscription).*(?:attempt|declined|failed|returned|unpaid|unsuccessful)|(?:attempt|declined|failed|returned|unpaid|unsuccessful).*(?:debicheck|debit order|edo collection|subscription)/i;
 
 function roundMoney(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
@@ -226,17 +210,28 @@ function toIso(year: number, month: number, day: number): string {
   return `${year.toString().padStart(4, '0')}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
 }
 
-function explicitDateParts(match: RegExpMatchArray): readonly [number, number, number] {
-  if (match[1]) return [Number(match[1]), Number(match[2]), Number(match[3])];
-  if (match[4]) return [Number(match[6].length === 2 ? `20${match[6]}` : match[6]), Number(match[5]), Number(match[4])];
-  return [Number(match[9]), MONTHS[match[8].toLowerCase()], Number(match[7])];
-}
-
 function parseExplicitDates(text: string): ParsedDate[] {
-  return [...text.matchAll(EXPLICIT_DATE)].flatMap((match) => {
-    const [year, month, day] = explicitDateParts(match);
-    return validParts(year, month, day) ? [{ year, month, day, iso: toIso(year, month, day) }] : [];
-  });
+  const dates: ParsedDate[] = [];
+  for (const match of text.matchAll(EXPLICIT_DATE)) {
+    let year: number;
+    let month: number;
+    let day: number;
+    if (match[1]) {
+      year = Number(match[1]);
+      month = Number(match[2]);
+      day = Number(match[3]);
+    } else if (match[4]) {
+      day = Number(match[4]);
+      month = Number(match[5]);
+      year = Number(match[6].length === 2 ? `20${match[6]}` : match[6]);
+    } else {
+      day = Number(match[7]);
+      month = MONTHS[match[8].toLowerCase()];
+      year = Number(match[9]);
+    }
+    if (validParts(year, month, day)) dates.push({ year, month, day, iso: toIso(year, month, day) });
+  }
+  return dates;
 }
 
 function balanceFrom(value: string): StatementBalance | null {
@@ -258,7 +253,7 @@ function resolveMovement(
 ): { flow: 'debit' | 'credit'; runningBalance: StatementBalance | null; posted: boolean } {
   let flow: 'debit' | 'credit' = amountIndicator === 'Cr' ? 'credit' : 'debit';
   let runningBalance = balance;
-  const isAttempt = FAILED_DEBIT_ORDER.test(description);
+  const isAttempt = /(?:debicheck|debit order|edo collection|subscription).*(?:attempt|declined|failed|returned|unpaid|unsuccessful)|(?:attempt|declined|failed|returned|unpaid|unsuccessful).*(?:debicheck|debit order|edo collection|subscription)/i.test(description);
 
   if (!balance || previousBalance === null) {
     return { flow: isAttempt ? 'debit' : flow, runningBalance, posted: true };
@@ -289,13 +284,15 @@ function resolveMovement(
 }
 
 function amountTokens(text: string): AmountToken[] {
-  return [...text.matchAll(AMOUNT_PATTERN)].flatMap((match): AmountToken[] => {
+  const tokens: AmountToken[] = [];
+  for (const match of text.matchAll(AMOUNT_PATTERN)) {
     const raw = match[0];
     const value = parseStatementAmount(raw);
-    if (value === null) return [];
+    if (value === null) continue;
     const indicator = /Cr\s*$/i.test(raw) ? 'Cr' : /Dr\s*$/i.test(raw) ? 'Dr' : null;
-    return [{ start: match.index ?? 0, end: (match.index ?? 0) + raw.length, value, indicator }];
-  });
+    tokens.push({ start: match.index ?? 0, end: (match.index ?? 0) + raw.length, value, indicator });
+  }
+  return tokens;
 }
 
 function detectPeriod(lines: readonly string[]): { start: string | null; end: string | null } {
@@ -382,27 +379,34 @@ function isHeaderOrFooter(line: string): boolean {
     /^\s*(?:total\s+(?:debits|credits|fees)|please\s+check|terms\s+and\s+conditions)\b/i.test(line);
 }
 
-/** Groups lines into dated rows: a dated line starts a row; undated lines continue it. */
 function extractRawTransactions(lines: readonly string[]): RawTransaction[] {
-  const folded = lines.reduce<Readonly<{ done: readonly RawTransaction[]; current: RawTransaction | null }>>(
-    (acc, line) => {
-      if (/^\s*(?:opening|closing)\s+balance\b/i.test(line) || isHeaderOrFooter(line)) return acc;
-      const parsedDate = parseDatePrefix(line);
-      if (parsedDate) return { done: acc.current ? [...acc.done, acc.current] : acc.done, current: { date: parsedDate.date, text: parsedDate.rest } };
-      if (!acc.current || !line.trim()) return acc;
-      if (/^\s*(?:total\s+(?:debits|credits)|balance\s+brought\s+forward)\b/i.test(line)) return acc;
-      return { ...acc, current: { ...acc.current, text: `${acc.current.text} ${line.trim()}` } };
-    },
-    { done: [], current: null },
-  );
-  return folded.current ? [...folded.done, folded.current] : [...folded.done];
+  const raw: RawTransaction[] = [];
+  let current: RawTransaction | null = null;
+  const finish = () => {
+    if (current) raw.push(current);
+    current = null;
+  };
+  for (const line of lines) {
+    if (/^\s*(?:opening|closing)\s+balance\b/i.test(line) || isHeaderOrFooter(line)) continue;
+    const parsedDate = parseDatePrefix(line);
+    if (parsedDate) {
+      finish();
+      current = { date: parsedDate.date, text: parsedDate.rest };
+      continue;
+    }
+    if (!current || !line.trim()) continue;
+    if (/^\s*(?:total\s+(?:debits|credits)|balance\s+brought\s+forward)\b/i.test(line)) continue;
+    current.text += ` ${line.trim()}`;
+  }
+  finish();
+  return raw;
 }
 
-function resolveDate(rawDate: ParsedDate, previous: string | null, period: { start: string | null; end: string | null }, fallbackYear: number): string {
+function resolveDate(rawDate: ParsedDate, previous: string | null, period: { start: string | null; end: string | null }): string {
   if (rawDate.iso) return rawDate.iso;
   const startYear = period.start ? Number(period.start.slice(0, 4)) : null;
   const endYear = period.end ? Number(period.end.slice(0, 4)) : null;
-  let year = startYear ?? endYear ?? (previous ? Number(previous.slice(0, 4)) : fallbackYear);
+  let year = startYear ?? endYear ?? (previous ? Number(previous.slice(0, 4)) : new Date().getUTCFullYear());
   if (previous) {
     year = Number(previous.slice(0, 4));
     const previousMonth = Number(previous.slice(5, 7));
@@ -447,7 +451,10 @@ function parseRawTransaction(raw: RawTransaction, index: number, date: string, p
     ? null
     : /salary|stansal|payroll|wages?|remuneration/i.test(rawLower) ? 'salary' : 'other';
   const confidence: Confidence = category === 'other' ? 'low' : runningBalance ? 'high' : 'medium';
-  const issues: StatementIssue[] = !movement.posted && /(?:debicheck|debit order|edo collection|subscription)/i.test(descriptionRaw) ? ['debit_order_attempt'] : [];
+  const issues: StatementIssue[] = [];
+  if (!movement.posted && /(?:debicheck|debit order|edo collection|subscription)/i.test(descriptionRaw)) {
+    issues.push('debit_order_attempt');
+  }
   return {
     id: `tx-${String(index + 1).padStart(5, '0')}`,
     date,
@@ -473,39 +480,146 @@ function median(values: readonly number[]): number {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
-/** Groups items by key, preserving first-seen order; returns fresh arrays. */
-function groupBy<T>(items: readonly T[], key: (t: T) => string): readonly (readonly T[])[] {
-  const grouped = items.reduce<Readonly<Record<string, readonly T[]>>>((acc, item) => {
-    const k = key(item);
-    return { ...acc, [k]: [...(acc[k] ?? []), item] };
-  }, {});
-  return Object.values(grouped);
+const DEBIT_ORDER = /debicheck|debit\s*order|edo\s+collection|\bnaedo\b|\bacb\s+debit|magtape|\bdebit\s+(?:instruction|mandate)|insurance\s+prem|\bpremium\b/i;
+const EFT = /\beft\b|internet\s+(?:pmt|payment|trf|transfer)|payment\s+to|pmt\s+to|send\s+money|express\s+pmt|immediate\s+(?:pmt|payment)|digital\s+payment|payshap|fnb\s+app\s+payment|scheduled\s+payment|stop\s+order|int-banking/i;
+const OWN_MONEY = /saving|investment|pocket|own\s+account|to\s+self|\bsave\b|tax\s+free|unit\s+trust/i;
+const HOUSING = /\brent(?:al)?\b|\blev(?:y|ies)\b|body\s*corp|home\s*loan|\bbond\b|mortgage|sectional\s+title|\bhoa\b|property\s+(?:management|rentals?)|rawson|pam\s+golding|seeff|tenant|landlord|accommodation|res(?:idence)?\s+fees/i;
+const INSURANCE = /insur|assur|\blife\b|funeral|outsurance|miway|king\s*price|hollard|discovery|momentum|old\s*mutual|sanlam|liberty|clientele|assupol|avbob|metropolitan|1life|dial\s+direct|first\s+for\s+women|auto\s*(?:&|and)\s*general|santam|medical\s+aid|medshield|bonitas|fedhealth|\bgems\b|bestmed|keyhealth|bankmed|polmed/i;
+const TRANSPORT = /vehicle|\bvaf\b|wesbank|\bmfc\b|car\s+(?:finance|instal)|auto\s+finance|(?:toyota|vw|bmw|ford|nissan|hyundai)\s+fin|gautrain|metrorail|prasa|myciti|rea\s+vaya|areyeng|a\s+re\s+yeng|go\s*george|\btaxi\b|e-?toll|sanral|tracker|cartrack|netstar|ctrack|lift\s*club|\bbus\s+(?:pass|card|ticket)/i;
+const UTILITIES = /electric|eskom|municipal|city\s+of|\bcoj\b|tshwane|ekurhuleni|ethekwini|msunduzi|mangaung|nelson\s+mandela\s+bay|\brates\b|\bwater\b|refuse|sewer|telkom|vumatel|openserve|frogfoot|octotel|metrofibre|fibre|afrihost|webafrica|cool\s*ideas|axxess|\brain\b|vodacom|\bmtn\b|cell\s*c|internet|uncapped|prepaid/i;
+const SUBSCRIPTIONS = /netflix|spotify|showmax|dstv|multichoice|apple\.com|apple\s+(?:music|tv|one)|itunes|icloud|google\s+(?:one|storage|play)|youtube|amazon\s+prime|prime\s+video|disney|deezer|audible|microsoft|xbox|playstation|\bpsn\b|adobe|canva|chatgpt|openai|virgin\s+active|planet\s+fitness|\bgym\b|zoom\.us|dropbox|patreon|subscription|uber\s+one|news24|linkedin/i;
+const DEBT = /loan|finchoice|unifi|credit\s+card|card\s+repay|repayment|pay\s*just\s*now|\bnpj|mobicred|\brcs\b|edgars|truworths|foschini|\btfg\b|jet\s+(?:card|account)|(?:woolworths|mr\s*price)\s+(?:card|account|fin)|\blewis\b|ok\s+furniture|wonga|capfin|african\s+bank|direct\s*axis|nsfas|credit\s+agreement|instal(?:l)?ment|store\s+card|account\s+payment/i;
+
+/** South African payee keywords → recurring-expense category. */
+export function recurringCategoryFor(description: string, category: StatementCategory = 'other'): RecurringCategory {
+  if (HOUSING.test(description)) return 'housing';
+  if (INSURANCE.test(description)) return 'insurance';
+  if (TRANSPORT.test(description)) return 'transport';
+  if (SUBSCRIPTIONS.test(description)) return 'subscriptions';
+  if (UTILITIES.test(description)) return 'utilities';
+  if (DEBT.test(description)) return 'debt';
+  switch (category) {
+    case 'debt': return 'debt';
+    case 'utilities': return 'utilities';
+    case 'transport': return 'transport';
+    case 'entertainment': return 'subscriptions';
+    default: return 'other';
+  }
 }
 
+function recurringChannel(transaction: StatementTransaction): RecurringChannel | null {
+  const text = transaction.descriptionRaw || transaction.description;
+  if (transaction.flow !== 'debit' || !transaction.posted) return null;
+  if (transaction.category === 'income' || transaction.category === 'cash' || transaction.category === 'fees') return null;
+  if (DEBIT_ORDER.test(text)) return 'debit_order';
+  if (EFT.test(text) || transaction.category === 'transfer') return OWN_MONEY.test(text) ? null : 'eft';
+  return 'card';
+}
+
+/** Payee name without payment-rail prefixes, references and trailing numbers. */
+function payeeName(transaction: StatementTransaction): string {
+  const name = transaction.merchant
+    .replace(/^(?:fnb\s+app\s+payment\s+to|internet\s+(?:pmt|payment|trf|transfer)\s+to|rtc\s+express\s+pmt\s+to|express\s+pmt\s+to|immediate\s+(?:pmt|payment)\s+to|digital\s+payment\s+to|payment\s+to|pmt\s+to|eft\s+to|send\s+money\s+to|scheduled\s+payment\s+to|stop\s+order\s+to|int-banking\s+pmt\s+(?:to|frm)|acb\s+debit|magtape\s+debit|naedo|debit\s+order|order|eft|payshap|send\s+money)\b[\s:*-]*/i, '')
+    .replace(/\b(?:ins(?:urance)?\s+prem(?:ium)?|premium|monthly|debit)\b/gi, ' ')
+    .replace(/[\s-]*\b\d[\d\s/-]*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return name || transaction.merchant;
+}
+
+function payeeKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function daysApart(a: string, b: string): number {
+  return (Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000;
+}
+
+function cadenceOf(sorted: readonly StatementTransaction[]): RecurringObligation['cadence'] {
+  if (sorted.length < 2) return 'monthly';
+  const gap = median(sorted.slice(1).map((item, index) => daysApart(sorted[index].date, item.date)));
+  const months = new Set(sorted.map((item) => item.date.slice(0, 7))).size;
+  if (gap >= 5 && gap <= 9) return 'weekly';
+  if (gap >= 12 && gap <= 17) return 'biweekly';
+  if (months >= 2 && gap >= 24 && gap <= 38) return 'monthly';
+  return 'irregular';
+}
+
+/** Splits a payee's debits into amount clusters when it charges more than once a month (e.g. two policies). */
+function amountClusters(items: readonly StatementTransaction[]): StatementTransaction[][] {
+  const months = new Set(items.map((item) => item.date.slice(0, 7))).size;
+  if (items.length <= months) return [[...items]];
+  const clusters: StatementTransaction[][] = [];
+  for (const item of [...items].sort((a, b) => a.amount - b.amount)) {
+    const cluster = clusters.find((group) => Math.abs(group[0].amount - item.amount) <= Math.max(1, group[0].amount * 0.05));
+    if (cluster) cluster.push(item);
+    else clusters.push([item]);
+  }
+  return clusters;
+}
+
+/**
+ * Debit orders, EFTs and repeated card charges that look like recurring
+ * expenses. Debit orders count even when seen once (they are recurring by
+ * nature); EFTs need a regular cadence and steady amount, or a housing payee;
+ * card charges need a known subscription payee or identical regular amounts.
+ */
 function recurringObligations(transactions: readonly StatementTransaction[]): RecurringObligation[] {
-  const candidates = transactions.filter((t) => t.flow === 'debit' && ['debt', 'fees', 'utilities', 'entertainment'].includes(t.category));
-  return groupBy(candidates, (t) => `${t.category}:${t.merchant.toLowerCase()}`).flatMap((items) => {
-    const sorted = [...items].sort((a, b) => a.date.localeCompare(b.date));
-    if (sorted.length < 2) return [];
-    const distinctMonths = new Set(sorted.map((item) => item.date.slice(0, 7))).size;
-    const gaps = sorted.slice(1).map((item, index) => {
-      return (Date.parse(`${item.date}T00:00:00Z`) - Date.parse(`${sorted[index].date}T00:00:00Z`)) / 86400000;
+  const groups = new Map<string, { channel: RecurringChannel; name: string; items: StatementTransaction[] }>();
+  for (const transaction of transactions) {
+    const channel = recurringChannel(transaction);
+    if (!channel) continue;
+    const name = payeeName(transaction);
+    const key = payeeKey(name);
+    if (!key) continue;
+    const group = groups.get(key);
+    if (group) {
+      group.items.push(transaction);
+      if (channel === 'debit_order') group.channel = channel;
+    } else {
+      groups.set(key, { channel, name, items: [transaction] });
+    }
+  }
+
+  return [...groups.entries()].flatMap(([key, group]) => {
+    const clusters = amountClusters(group.items);
+    return clusters.flatMap((cluster) => {
+      const sorted = [...cluster].sort((a, b) => a.date.localeCompare(b.date));
+      const description = sorted.map((item) => item.descriptionRaw || item.description).join(' ');
+      const category = recurringCategoryFor(description, sorted[0].category);
+      const cadence = cadenceOf(sorted);
+      const amounts = sorted.map((item) => item.amount);
+      const typical = median(amounts);
+      const variation = typical > 0 ? (Math.max(...amounts) - Math.min(...amounts)) / typical : 1;
+      const knownSubscription = SUBSCRIPTIONS.test(description);
+      const single = sorted.length === 1;
+      const regular = cadence !== 'irregular';
+
+      let accept: boolean;
+      if (group.channel === 'debit_order') accept = single || regular;
+      else if (group.channel === 'eft') accept = single ? category === 'housing' : regular && variation <= 0.25;
+      else if (sorted[0].category === 'groceries' || sorted[0].category === 'dining') accept = knownSubscription && regular;
+      else accept = knownSubscription ? single || regular : !single && regular && variation <= 0.02;
+      if (!accept) return [];
+
+      const step = cadence === 'weekly' ? 7 : cadence === 'biweekly' ? 14 : 0;
+      const days = sorted.map((item) => Number(item.date.slice(8, 10)));
+      const billingDay = step ? ((days[0] - 1) % step) + 1 : [...days].sort((a, b) => a - b)[Math.floor(days.length / 2)];
+      return [{
+        key: clusters.length > 1 ? `${key} ${Math.round(typical)}` : key,
+        merchant: group.name,
+        category,
+        channel: group.channel,
+        averageAmount: roundMoney(typical),
+        cadence,
+        occurrences: sorted.length,
+        months: new Set(sorted.map((item) => item.date.slice(0, 7))).size,
+        billingDay,
+        firstDate: sorted[0].date,
+        lastDate: sorted[sorted.length - 1].date,
+        confidence: !single && regular && variation <= 0.1 ? ('high' as const) : ('medium' as const),
+      }];
     });
-    const gap = median(gaps);
-    const cadence = gap >= 5 && gap <= 9 ? 'weekly' : distinctMonths >= 2 && gap >= 24 && gap <= 38 ? 'monthly' : 'irregular';
-    const category = sorted[0].category === 'debt' || sorted[0].category === 'fees' ||
-      sorted[0].category === 'utilities' || sorted[0].category === 'entertainment'
-      ? sorted[0].category
-      : 'other';
-    return [{
-      merchant: sorted[0].merchant,
-      category,
-      averageAmount: roundMoney(sorted.reduce((sum, item) => sum + item.amount, 0) / sorted.length),
-      cadence,
-      occurrences: sorted.length,
-      firstDate: sorted[0].date,
-      lastDate: sorted[sorted.length - 1].date,
-    }];
   });
 }
 
@@ -529,43 +643,42 @@ function analyze(
   const cashBack = roundMoney(expenses.filter((t) => /cash\s*back|cashback/i.test(t.descriptionRaw)).reduce((sum, t) => sum + t.amount, 0));
   const digitalCardSpend = roundMoney(expenses.filter((t) => /pos|card purchase|card swipe/i.test(t.descriptionRaw) && t.category !== 'cash').reduce((sum, t) => sum + t.amount, 0));
   const obligations = recurringObligations(postedTransactions);
-  const anomaly = (transaction: StatementTransaction, kind: StatementIssue, message: string): StatementAnomaly => ({
-    kind,
-    transactionId: transaction.id,
-    date: transaction.date,
-    description: transaction.description,
-    amount: transaction.amount,
-    message,
-  });
-  const chargeKey = (t: StatementTransaction) => `${t.date}:${t.merchant.toLowerCase()}:${t.amount.toFixed(2)}`;
-  const isPostedDebit = (t: StatementTransaction) => t.posted && t.flow === 'debit';
-  const firstChargeIndex = transactions.reduce<Readonly<Record<string, number>>>(
-    (acc, t, i) => (isPostedDebit(t) && !(chargeKey(t) in acc) ? { ...acc, [chargeKey(t)]: i } : acc),
-    {},
-  );
-  const perTransaction = transactions.flatMap((transaction, i): StatementAnomaly[] => [
-    ...(isPostedDebit(transaction) && firstChargeIndex[chargeKey(transaction)] !== i
-      ? [anomaly(transaction, 'duplicate_charge', 'Possible duplicate charge: same merchant and amount on the same day.')]
-      : []),
-    ...(/fee.*(?:declined|unsuccessful)|(?:declined|unsuccessful).*fee/i.test(transaction.descriptionRaw)
-      ? [anomaly(transaction, 'failed_transaction_fee', 'A fee appears related to a declined or unsuccessful transaction.')]
-      : []),
-    ...(transaction.issues.includes('debit_order_attempt') || FAILED_DEBIT_ORDER.test(transaction.descriptionRaw)
-      ? [anomaly(transaction, 'debit_order_attempt', 'A recurring payment attempt appears to have failed or been returned.')]
-      : []),
-    ...(transaction.balanceCheck === 'mismatch' ? [anomaly(transaction, 'balance_mismatch', 'The running balance does not reconcile with the preceding balance and transaction.')] : []),
-    ...(transaction.issues.includes('out_of_order') ? [anomaly(transaction, 'out_of_order', 'Transaction date is earlier than the preceding statement entry.')] : []),
-  ]);
-  const peersByCategory = Object.fromEntries(groupBy(expenses, (t) => t.category).map((group) => [group[0].category, group.map((t) => t.amount)]));
-  const spikes = expenses.flatMap((transaction): StatementAnomaly[] => {
-    const peers = peersByCategory[transaction.category] ?? [];
-    if (peers.length < 5) return [];
-    const baseline = median(peers);
-    return baseline > 0 && transaction.amount >= Math.max(3 * baseline, baseline + 250)
-      ? [anomaly(transaction, 'unusual_spike', `This ${transaction.category} payment is unusually large compared with similar statement transactions.`)]
-      : [];
-  });
-  const anomalies = [...perTransaction, ...spikes];
+  const anomalies: StatementAnomaly[] = [];
+  const addAnomaly = (transaction: StatementTransaction, kind: StatementIssue, message: string) => {
+    anomalies.push({ kind, transactionId: transaction.id, date: transaction.date, description: transaction.description, amount: transaction.amount, message });
+  };
+  const seen = new Set<string>();
+  for (const transaction of transactions) {
+    if (transaction.posted && transaction.flow === 'debit') {
+      const key = `${transaction.date}:${transaction.merchant.toLowerCase()}:${transaction.amount.toFixed(2)}`;
+      if (seen.has(key)) addAnomaly(transaction, 'duplicate_charge', 'Possible duplicate charge: same merchant and amount on the same day.');
+      seen.add(key);
+    }
+    if (/fee.*(?:declined|unsuccessful)|(?:declined|unsuccessful).*fee/i.test(transaction.descriptionRaw)) {
+      addAnomaly(transaction, 'failed_transaction_fee', 'A fee appears related to a declined or unsuccessful transaction.');
+    }
+    if (transaction.issues.includes('debit_order_attempt') ||
+      /(?:debicheck|debit order|edo collection|subscription).*(?:attempt|declined|failed|returned|unpaid|unsuccessful)|(?:attempt|declined|failed|returned|unpaid|unsuccessful).*(?:debicheck|debit order|edo collection|subscription)/i.test(transaction.descriptionRaw)) {
+      addAnomaly(transaction, 'debit_order_attempt', 'A recurring payment attempt appears to have failed or been returned.');
+    }
+    if (transaction.balanceCheck === 'mismatch') addAnomaly(transaction, 'balance_mismatch', 'The running balance does not reconcile with the preceding balance and transaction.');
+    if (transaction.issues.includes('out_of_order')) addAnomaly(transaction, 'out_of_order', 'Transaction date is earlier than the preceding statement entry.');
+  }
+  const amountsByCategory = new Map<string, number[]>();
+  for (const transaction of expenses) {
+    const amounts = amountsByCategory.get(transaction.category) ?? [];
+    amounts.push(transaction.amount);
+    amountsByCategory.set(transaction.category, amounts);
+  }
+  const baselineByCategory = new Map([...amountsByCategory].map(([category, amounts]) => [category, median(amounts)]));
+  for (const transaction of expenses) {
+    const peers = amountsByCategory.get(transaction.category) ?? [];
+    if (peers.length < 5) continue;
+    const baseline = baselineByCategory.get(transaction.category) ?? 0;
+    if (baseline > 0 && transaction.amount >= Math.max(3 * baseline, baseline + 250)) {
+      addAnomaly(transaction, 'unusual_spike', `This ${transaction.category} payment is unusually large compared with similar statement transactions.`);
+    }
+  }
   const balanceReconciliation = opening?.signedAmount !== undefined && closing?.signedAmount !== undefined
     ? Math.abs(roundMoney(opening.signedAmount + totalCredits - totalDebits - closing.signedAmount)) <= 0.02
       ? 'matched'
@@ -602,18 +715,19 @@ function analyze(
       endingBalance,
     };
   }).reverse();
-  const insights = [
-    income > 0 && debtPayments > 0 && `Debt payments consumed ${((debtPayments / income) * 100).toFixed(1)}% of recognized income.`,
-    income > 0 && bankFees > 0 && `Bank fees consumed ${((bankFees / income) * 100).toFixed(1)}% of recognized income.`,
-    payCycles.some((cycle) => cycle.income > 0 && cycle.postPaydayOutflow >= cycle.income * 0.4) &&
-      'A large share of income is spent in the first week after payday; review early-cycle spending.',
-    payCycles.some((cycle) => cycle.income > 0 && cycle.prePaydayOutflow >= cycle.income * 0.4) &&
-      'Outflows cluster near the end of a pay cycle; check the balance available before payday.',
-    atmWithdrawals + cashBack > 0 && `Cash usage totalled R${(atmWithdrawals + cashBack).toFixed(2)}: R${atmWithdrawals.toFixed(2)} at ATMs and R${cashBack.toFixed(2)} in cash back.`,
-    obligations.some((item) => item.cadence === 'irregular') && 'Review repeated debit orders and subscriptions with irregular timing.',
-    anomalies.length > 0 && `${anomalies.length} transaction pattern${anomalies.length === 1 ? '' : 's'} need review.`,
-    balanceReconciliation === 'mismatch' && 'Statement opening, transaction, and closing balances do not reconcile; review extracted rows.',
-  ].filter((line): line is string => typeof line === 'string');
+  const insights: string[] = [];
+  if (income > 0 && debtPayments > 0) insights.push(`Debt payments consumed ${((debtPayments / income) * 100).toFixed(1)}% of recognized income.`);
+  if (income > 0 && bankFees > 0) insights.push(`Bank fees consumed ${((bankFees / income) * 100).toFixed(1)}% of recognized income.`);
+  if (payCycles.some((cycle) => cycle.income > 0 && cycle.postPaydayOutflow >= cycle.income * 0.4)) {
+    insights.push('A large share of income is spent in the first week after payday; review early-cycle spending.');
+  }
+  if (payCycles.some((cycle) => cycle.income > 0 && cycle.prePaydayOutflow >= cycle.income * 0.4)) {
+    insights.push('Outflows cluster near the end of a pay cycle; check the balance available before payday.');
+  }
+  if (atmWithdrawals + cashBack > 0) insights.push(`Cash usage totalled R${(atmWithdrawals + cashBack).toFixed(2)}: R${atmWithdrawals.toFixed(2)} at ATMs and R${cashBack.toFixed(2)} in cash back.`);
+  if (obligations.some((item) => item.confidence !== 'high')) insights.push('Some debit orders and repeat payments were seen only once or vary in amount; confirm them before saving.');
+  if (anomalies.length) insights.push(`${anomalies.length} transaction pattern${anomalies.length === 1 ? '' : 's'} need review.`);
+  if (balanceReconciliation === 'mismatch') insights.push('Statement opening, transaction, and closing balances do not reconcile; review extracted rows.');
   return {
     totalCredits,
     totalDebits,
@@ -638,195 +752,153 @@ function addDays(date: string, amount: number): string {
   return value.toISOString().slice(0, 10);
 }
 
-// ---------------------------------------------------------------------------
-// Statement assembly (pure folds)
-
-type Header = Readonly<{
-  period: Readonly<{ start: string | null; end: string | null }>;
-  accountNumber: string | null;
-  openingBalance: StatementBalance | null;
-  closingBalance: StatementBalance | null;
-  bank: BankStatementDocument['bank'];
-  accountType: BankStatementDocument['accountType'];
-}>;
-
-/** Running state while folding rows: transactions so far, last date, last known balance. */
-type StatementFold = Readonly<{ transactions: readonly StatementTransaction[]; previousDate: string | null; previousBalance: number | null }>;
-
-const NO_DATED: StatementParseError = { kind: 'no_dated_transactions', message: 'No dated transactions were found in this bank statement PDF.' };
-const NO_MONETARY: StatementParseError = { kind: 'no_monetary_transactions', message: 'No monetary transactions were found in this bank statement PDF.' };
-
-const splitLines = (text: string) => text.replace(/\r\n?/g, '\n').replace(/\f/g, '\n').split('\n').map((line) => line.trim()).filter(Boolean);
-
-function readHeader(text: string, lines: readonly string[]): Header {
+export function parseBankStatementText(text: string, pages = 1): BankStatementDocument {
+  const lines = text.replace(/\r\n?/g, '\n').replace(/\f/g, '\n').split('\n').map((line) => line.trim()).filter(Boolean);
+  const period = detectPeriod(lines);
   const accountLine = lines.find((line) => /\baccount\s*(?:number|no\.?|#)/i.test(line));
+  const accountNumber = accountLine?.match(/\baccount\s*(?:number|no\.?|#)\s*[:#-]?\s*([0-9][0-9 -]{4,})/i)?.[1]?.replace(/\D/g, '') ?? null;
   const openingLine = lines.find((line) => /^\s*opening\s+balance\b/i.test(line));
   const closingLine = [...lines].reverse().find((line) => /^\s*closing\s+balance\b/i.test(line));
-  return {
-    period: detectPeriod(lines),
-    accountNumber: accountLine?.match(/\baccount\s*(?:number|no\.?|#)\s*[:#-]?\s*([0-9][0-9 -]{4,})/i)?.[1]?.replace(/\D/g, '') ?? null,
-    openingBalance: openingLine ? balanceFrom(openingLine.replace(/^.*?\bopening\s+balance\b/i, '')) : null,
-    closingBalance: closingLine ? balanceFrom(closingLine.replace(/^.*?\bclosing\s+balance\b/i, '')) : null,
-    bank: /\bFNB\b|FIRST\s+NATIONAL\s+BANK/i.test(text) ? 'FNB' : 'unknown',
-    accountType: /aspire\s+current/i.test(text) ? 'Aspire Current Account' : null,
-  };
-}
-
-const startFold = (opening: StatementBalance | null): StatementFold => ({ transactions: [], previousDate: null, previousBalance: opening?.signedAmount ?? null });
-
-const appendTransaction = (acc: StatementFold, transaction: StatementTransaction): StatementFold => ({
-  transactions: [...acc.transactions, transaction],
-  previousDate: transaction.date,
-  previousBalance: transaction.runningBalance ? transaction.runningBalance.signedAmount : acc.previousBalance,
-});
-
-/** Reconciles a row against the previous running balance (an unposted attempt shouldn't move it). */
-function balanceCheckFor(t: Pick<StatementTransaction, 'posted' | 'flow' | 'amount' | 'runningBalance'>, previousBalance: number | null): StatementTransaction['balanceCheck'] {
-  if (!t.runningBalance || previousBalance === null) return 'unavailable';
-  const expected = t.posted ? roundMoney(previousBalance + (t.flow === 'credit' ? t.amount : -t.amount)) : previousBalance;
-  return Math.abs(expected - t.runningBalance.signedAmount) <= 0.02 ? 'matched' : 'mismatch';
-}
-
-/** Adds ordering and reconciliation checks that depend on the preceding row. */
-function withSequenceChecks(t: StatementTransaction, acc: StatementFold): StatementTransaction {
-  const balanceCheck = balanceCheckFor(t, acc.previousBalance);
-  const issues: StatementIssue[] = [
-    ...t.issues,
-    ...(acc.previousDate && t.date < acc.previousDate ? (['out_of_order'] as const) : []),
-    ...(balanceCheck === 'mismatch' ? (['balance_mismatch'] as const) : []),
-  ];
-  return { ...t, balanceCheck, issues };
-}
-
-const buildDocument = (header: Header, pages: number, transactions: readonly StatementTransaction[]): BankStatementDocument => ({
-  bank: header.bank,
-  accountType: header.accountType,
-  accountNumber: header.accountNumber,
-  currency: 'ZAR',
-  period: {
-    start: header.period.start ?? transactions[0]?.date ?? null,
-    end: header.period.end ?? transactions[transactions.length - 1]?.date ?? null,
-  },
-  openingBalance: header.openingBalance,
-  closingBalance: header.closingBalance,
-  pages,
-  transactions,
-  analysis: analyze(transactions, header.openingBalance, header.closingBalance),
-});
-
-/** Parses statement text. Pure: the caller supplies the fallback year; failures are values. */
-export function parseStatementText(text: string, options: StatementParseOptions): Result<BankStatementDocument, StatementParseError> {
-  const lines = splitLines(text);
-  const header = readHeader(text, lines);
+  const openingBalance = openingLine ? balanceFrom(openingLine.replace(/^.*?\bopening\s+balance\b/i, '')) : null;
+  const closingBalance = closingLine ? balanceFrom(closingLine.replace(/^.*?\bclosing\s+balance\b/i, '')) : null;
   const rawTransactions = extractRawTransactions(lines);
-  if (!rawTransactions.length) return err(NO_DATED);
-  const folded = rawTransactions
-    .filter((raw) => amountTokens(stripReferenceMetadata(raw.text)).length > 0)
-    .reduce<StatementFold>((acc, raw) => {
-      const date = resolveDate(raw.date, acc.previousDate, header.period, options.fallbackYear);
-      const parsed = parseRawTransaction(raw, acc.transactions.length, date, acc.previousBalance);
-      return appendTransaction(acc, withSequenceChecks(parsed, acc));
-    }, startFold(header.openingBalance));
-  if (!folded.transactions.length) return err(NO_MONETARY);
-  return ok(buildDocument(header, options.pages ?? 1, folded.transactions));
-}
+  if (!rawTransactions.length) throw new Error('No dated transactions were found in this bank statement PDF.');
 
-// ---------------------------------------------------------------------------
-// Positioned PDF items (column layout)
+  const transactions: StatementTransaction[] = [];
+  let previousDate: string | null = null;
+  let previousBalance = openingBalance?.signedAmount ?? null;
+  for (const raw of rawTransactions) {
+    if (!amountTokens(stripReferenceMetadata(raw.text)).length) continue;
+    const index = transactions.length;
+    const date = resolveDate(raw.date, previousDate, period);
+    const parsed = parseRawTransaction(raw, index, date, previousBalance);
+    let balanceCheck: StatementTransaction['balanceCheck'] = 'unavailable';
+    const issues = [...parsed.issues];
+    if (previousDate && date < previousDate) issues.push('out_of_order');
+    if (parsed.runningBalance && previousBalance !== null) {
+      const expected = parsed.posted
+        ? roundMoney(previousBalance + (parsed.flow === 'credit' ? parsed.amount : -parsed.amount))
+        : previousBalance;
+      balanceCheck = Math.abs(expected - parsed.runningBalance.signedAmount) <= 0.02 ? 'matched' : 'mismatch';
+      if (balanceCheck === 'mismatch') issues.push('balance_mismatch');
+    }
+    const transaction = { ...parsed, balanceCheck, issues };
+    transactions.push(transaction);
+    previousDate = date;
+    if (transaction.runningBalance) previousBalance = transaction.runningBalance.signedAmount;
+  }
+  if (!transactions.length) throw new Error('No monetary transactions were found in this bank statement PDF.');
 
-type Positioned = Readonly<{ page: number; x: number; y: number; text: string }>;
-type Row = Readonly<{ page: number; y: number; items: readonly Positioned[] }>;
-type Columns = Readonly<{ date: string; description: string; amount: string; balance: string }>;
-
-const toPositioned = (items: readonly BankStatementTextItem[]): readonly Positioned[] =>
-  items
-    .filter((item) => item.str.trim())
-    .map((item) => ({ page: item.page ?? 1, x: item.transform?.[4] ?? 0, y: item.transform?.[5] ?? 0, text: item.str.replace(/\s+/g, ' ').trim() }))
-    .sort((a, b) => a.page - b.page || b.y - a.y || a.x - b.x);
-
-/** Items within 2pt vertically on the same page form one row. */
-const groupRows = (positioned: readonly Positioned[]): readonly Row[] =>
-  positioned.reduce<readonly Row[]>((rows, item) => {
-    const last = rows[rows.length - 1];
-    if (!last || last.page !== item.page || Math.abs(last.y - item.y) > 2) return [...rows, { page: item.page, y: item.y, items: [item] }];
-    return [...rows.slice(0, -1), { ...last, items: [...last.items, item] }];
-  }, []);
-
-/** FNB column bands: date ≤ 30, description 30–440, amount 440–500, balance 500–560. */
-function readColumns(row: Row): Readonly<{ line: string; columns: Columns | null }> {
-  const ordered = [...row.items].sort((a, b) => a.x - b.x);
-  const dateColumn = ordered.find((item) => item.x <= 30 && parseDatePrefix(item.text));
-  if (!dateColumn) return { line: ordered.map((item) => item.text).join(' '), columns: null };
-  const band = (lo: number, hi: number) => ordered.filter((item) => item.x >= lo && item.x < hi).map((item) => item.text).join(' ');
-  const description = ordered.filter((item) => item.x > 30 && item.x < 440).map((item) => item.text).join(' ');
-  const amount = band(440, 500);
-  const balance = band(500, 560);
+  let bank: BankStatementDocument['bank'] = 'unknown';
+  if (/\bFNB\b|FIRST\s+NATIONAL\s+BANK/i.test(text)) bank = 'FNB';
+  const accountType = /aspire\s+current/i.test(text) ? 'Aspire Current Account' : null;
   return {
-    line: [dateColumn.text, description, amount, balance].filter(Boolean).join(' '),
-    columns: amount || balance ? { date: dateColumn.text, description, amount, balance } : null,
+    bank,
+    accountType,
+    accountNumber,
+    currency: 'ZAR',
+    period: {
+      start: period.start ?? transactions[0]?.date ?? null,
+      end: period.end ?? transactions[transactions.length - 1]?.date ?? null,
+    },
+    openingBalance,
+    closingBalance,
+    pages,
+    transactions,
+    analysis: analyze(transactions, openingBalance, closingBalance),
   };
-}
-
-function positionedTransaction(row: Columns, acc: StatementFold, period: Header['period'], fallbackYear: number): StatementTransaction | null {
-  const datePrefix = parseDatePrefix(row.date);
-  const amount = balanceFrom(row.amount);
-  if (!datePrefix || !amount) return null;
-  const date = resolveDate(datePrefix.date, acc.previousDate, period, fallbackYear);
-  const descriptionRaw = stripReferenceMetadata(`${datePrefix.rest} ${row.description}`.trim());
-  const description = cleanDescription(descriptionRaw) || 'Unknown transaction';
-  const { flow, runningBalance, posted } = resolveMovement(amount.amount, amount.indicator, balanceFrom(row.balance), acc.previousBalance, descriptionRaw);
-  const category = classify(descriptionRaw || description, flow);
-  const base: StatementTransaction = {
-    id: `tx-${String(acc.transactions.length + 1).padStart(5, '0')}`,
-    date,
-    descriptionRaw,
-    description,
-    merchant: cleanDescription(merchantName(description)),
-    amount: amount.amount,
-    flow,
-    posted,
-    incomeSource: flow !== 'credit' || category !== 'income' ? null : /salary|stansal|payroll|wages?|remuneration/i.test(descriptionRaw) ? 'salary' : 'other',
-    category,
-    runningBalance,
-    balanceCheck: 'unavailable',
-    confidence: category === 'other' ? 'low' : runningBalance ? 'high' : 'medium',
-    issues: FAILED_DEBIT_ORDER.test(descriptionRaw) ? ['debit_order_attempt'] : [],
-  };
-  return withSequenceChecks(base, acc);
-}
-
-/** Parses positioned PDF text items using the column layout, falling back to text for metadata. */
-export function parseStatementItems(items: readonly BankStatementTextItem[], options: StatementParseOptions): Result<BankStatementDocument, StatementParseError> {
-  const rows = groupRows(toPositioned(items)).map(readColumns);
-  const fromText = parseStatementText(rows.map((r) => r.line).join('\n'), options);
-  if (!fromText.ok) return fromText;
-  const document = fromText.value;
-  const folded = rows
-    .flatMap((r) => (r.columns ? [r.columns] : []))
-    .reduce<StatementFold>((acc, row) => {
-      const transaction = positionedTransaction(row, acc, document.period, options.fallbackYear);
-      return transaction ? appendTransaction(acc, transaction) : acc;
-    }, startFold(document.openingBalance));
-  if (!folded.transactions.length) return err(NO_MONETARY);
-  return ok({ ...document, transactions: folded.transactions, analysis: analyze(folded.transactions, document.openingBalance, document.closingBalance) });
-}
-
-// ---------------------------------------------------------------------------
-// Boundary adapters: supply the current year and throw, for exception-style callers
-
-const orThrow = <T>(r: Result<T, StatementParseError>): T => {
-  if (r.ok) return r.value;
-  throw new Error(r.error.message);
-};
-
-export function parseBankStatementText(text: string, pages = 1): BankStatementDocument {
-  return orThrow(parseStatementText(text, { pages, fallbackYear: new Date().getUTCFullYear() }));
 }
 
 export function parseBankStatementItems(items: readonly BankStatementTextItem[], pages = 1): BankStatementDocument {
-  return orThrow(parseStatementItems(items, { pages, fallbackYear: new Date().getUTCFullYear() }));
-}
+  const positioned = items
+    .filter((item) => item.str.trim())
+    .map((item) => ({
+      page: item.page ?? 1,
+      x: item.transform?.[4] ?? 0,
+      y: item.transform?.[5] ?? 0,
+      text: item.str.replace(/\s+/g, ' ').trim(),
+    }))
+    .sort((a, b) => a.page - b.page || b.y - a.y || a.x - b.x);
+  const rows: { page: number; y: number; items: typeof positioned }[] = [];
+  const positionedTransactions: { date: string; description: string; amount: string; balance: string }[] = [];
+  for (const item of positioned) {
+    let row = rows[rows.length - 1];
+    if (!row || row.page !== item.page || Math.abs(row.y - item.y) > 2) {
+      row = { page: item.page, y: item.y, items: [] };
+      rows.push(row);
+    }
+    row.items.push(item);
+  }
+  const lines = rows.map((row) => {
+    const ordered = row.items.sort((a, b) => a.x - b.x);
+    const dateColumn = ordered.find((item) => item.x <= 30 && parseDatePrefix(item.text));
+    if (!dateColumn) return ordered.map((item) => item.text).join(' ');
 
+    const description = ordered.filter((item) => item.x > 30 && item.x < 440).map((item) => item.text).join(' ');
+    const amount = ordered.filter((item) => item.x >= 440 && item.x < 500).map((item) => item.text).join(' ');
+    const balance = ordered.filter((item) => item.x >= 500 && item.x < 560).map((item) => item.text).join(' ');
+    if (amount || balance) positionedTransactions.push({ date: dateColumn.text, description, amount, balance });
+    return [dateColumn.text, description, amount, balance].filter(Boolean).join(' ');
+  });
+  const document = parseBankStatementText(lines.join('\n'), pages);
+  const transactions: StatementTransaction[] = [];
+  let previousDate: string | null = null;
+  let previousBalance = document.openingBalance?.signedAmount ?? null;
+  for (const row of positionedTransactions) {
+    const datePrefix = parseDatePrefix(row.date);
+    const amount = balanceFrom(row.amount);
+    if (!datePrefix || !amount) continue;
+    const date = resolveDate(datePrefix.date, previousDate, document.period);
+    const descriptionRaw = stripReferenceMetadata(
+      `${parseDatePrefix(row.date)?.rest ?? ''} ${row.description}`.trim(),
+    );
+    const description = cleanDescription(descriptionRaw) || 'Unknown transaction';
+    const movement = resolveMovement(
+      amount.amount,
+      amount.indicator,
+      balanceFrom(row.balance),
+      previousBalance,
+      descriptionRaw,
+    );
+    const { flow, runningBalance, posted } = movement;
+    const category = classify(descriptionRaw || description, flow);
+    const issues: StatementIssue[] = [];
+    if (previousDate && date < previousDate) issues.push('out_of_order');
+    if (/(?:debicheck|debit order|edo collection|subscription).*(?:attempt|declined|failed|returned|unpaid|unsuccessful)|(?:attempt|declined|failed|returned|unpaid|unsuccessful).*(?:debicheck|debit order|edo collection|subscription)/i.test(descriptionRaw)) {
+      issues.push('debit_order_attempt');
+    }
+    let balanceCheck: StatementTransaction['balanceCheck'] = 'unavailable';
+    if (!posted && runningBalance && previousBalance !== null) {
+      balanceCheck = Math.abs(runningBalance.signedAmount - previousBalance) <= 0.02 ? 'matched' : 'mismatch';
+    } else if (runningBalance && previousBalance !== null) {
+      const expected = roundMoney(previousBalance + (flow === 'credit' ? amount.amount : -amount.amount));
+      balanceCheck = Math.abs(expected - runningBalance.signedAmount) <= 0.02 ? 'matched' : 'mismatch';
+    }
+    if (balanceCheck === 'mismatch') issues.push('balance_mismatch');
+    transactions.push({
+      id: `tx-${String(transactions.length + 1).padStart(5, '0')}`,
+      date,
+      descriptionRaw,
+      description,
+      merchant: cleanDescription(merchantName(description)),
+      amount: amount.amount,
+      flow,
+      posted,
+      incomeSource: flow !== 'credit' || category !== 'income'
+        ? null
+        : /salary|stansal|payroll|wages?|remuneration/i.test(descriptionRaw) ? 'salary' : 'other',
+      category,
+      runningBalance,
+      balanceCheck,
+      confidence: category === 'other' ? 'low' : runningBalance ? 'high' : 'medium',
+      issues,
+    });
+    previousDate = date;
+    if (runningBalance) previousBalance = runningBalance.signedAmount;
+  }
+  if (!transactions.length) throw new Error('No monetary transactions were found in this bank statement PDF.');
+  return { ...document, transactions, analysis: analyze(transactions, document.openingBalance, document.closingBalance) };
+}
 
 export function toAppTransactions(document: BankStatementDocument, sourceDocId: string): Transaction[] {
   return document.transactions.filter((transaction) => transaction.posted).map((transaction) => ({
@@ -843,24 +915,80 @@ export function toAppTransactions(document: BankStatementDocument, sourceDocId: 
   }));
 }
 
-export function recurringBillsFromStatement(document: BankStatementDocument) {
-  return document.analysis.recurringObligations
-    .filter((item) => item.cadence !== 'irregular' && (item.category === 'debt' || item.category === 'utilities' || item.category === 'entertainment'))
-    .map((item) => {
-      const matching = document.transactions.filter((transaction) =>
-        transaction.posted && transaction.flow === 'debit' && transaction.merchant.toLowerCase() === item.merchant.toLowerCase(),
-      );
-      const dates = matching.map((transaction) => new Date(`${transaction.date}T00:00:00Z`).getUTCDate()).sort((a, b) => a - b);
-      return {
-        id: `statement-bill-${item.merchant.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
-        name: item.merchant,
-        amount: item.cadence === 'weekly' ? roundMoney(item.averageAmount * 52 / 12) : item.averageAmount,
-        day: dates[Math.floor(dates.length / 2)] ?? 1,
-        cadence: item.cadence === 'weekly' ? 'weekly' as const : 'monthly' as const,
-        confidence: item.cadence === 'irregular' ? 'medium' as const : 'high' as const,
-        active: true,
-        isSubscription: item.category === 'entertainment' || matching.some((transaction) => /subscription|netflix|spotify|showmax|dstv|ster-kinekor/i.test(transaction.description)),
-        monthsPaid: new Set(matching.map((transaction) => transaction.date.slice(0, 7))).size,
-      };
-    });
+const PER_MONTH: Record<RecurringFrequency, number> = { monthly: 1, weekly: 52 / 12, biweekly: 26 / 12 };
+
+function slug(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+/** Every recurring payment detected in a statement, as recurring-expense suggestions. */
+export function detectedRecurringExpenses(document: BankStatementDocument): RecurringExpense[] {
+  return document.analysis.recurringObligations.flatMap((item) =>
+    item.cadence === 'irregular'
+      ? []
+      : [{
+          id: `statement-recurring-${slug(item.key)}`,
+          name: item.merchant,
+          amount: item.averageAmount,
+          category: item.category,
+          billingDayOfMonth: item.billingDay,
+          frequency: item.cadence,
+          isEssential: item.category !== 'subscriptions' && item.category !== 'other',
+          source: 'bank_statement' as const,
+          active: true,
+          confidence: item.confidence,
+          monthsPaid: item.months,
+        }],
+  );
+}
+
+function monthlyEquivalent(expense: Pick<RecurringExpense, 'amount' | 'frequency'>): number {
+  return expense.amount * (PER_MONTH[expense.frequency] ?? 1);
+}
+
+/**
+ * True when a detected payment is one the user already has: the same payee name
+ * (one containing the other) at a similar amount, or, for a bill typed in under
+ * another name, the same category with the amount within 5% and the billing day
+ * within 3 days.
+ */
+export function isSameRecurringExpense(candidate: RecurringExpense, saved: RecurringExpense): boolean {
+  if (candidate.id === saved.id) return true;
+  const a = payeeKey(candidate.name);
+  const b = payeeKey(saved.name);
+  const candidateMonthly = monthlyEquivalent(candidate);
+  const savedMonthly = monthlyEquivalent(saved);
+  const sameName = Boolean(a && b) && (a === b || (a.length >= 4 && b.includes(a)) || (b.length >= 4 && a.includes(b)));
+  if (sameName) {
+    // A very different amount from the same payee is a second policy or account.
+    const ratio = savedMonthly > 0 ? candidateMonthly / savedMonthly : 1;
+    return ratio >= 0.5 && ratio <= 2;
+  }
+  const dayGap = Math.abs(candidate.billingDayOfMonth - saved.billingDayOfMonth);
+  return candidate.category === saved.category &&
+    candidate.category !== 'other' &&
+    Math.abs(candidateMonthly - savedMonthly) <= Math.max(1, savedMonthly * 0.05) &&
+    Math.min(dayGap, 31 - dayGap) <= 3;
+}
+
+export type RecurringSuggestionSplit = {
+  fresh: RecurringExpense[];
+  alreadySaved: { suggestion: RecurringExpense; existing: RecurringExpense }[];
+};
+
+/** Separates new suggestions from ones already saved, and drops repeats within the list. */
+export function splitRecurringSuggestions(suggestions: readonly RecurringExpense[], saved: readonly RecurringExpense[]): RecurringSuggestionSplit {
+  const fresh: RecurringExpense[] = [];
+  const alreadySaved: RecurringSuggestionSplit['alreadySaved'] = [];
+  for (const suggestion of suggestions) {
+    const existing = saved.find((item) => isSameRecurringExpense(suggestion, item));
+    if (existing) alreadySaved.push({ suggestion, existing });
+    else if (!fresh.some((item) => isSameRecurringExpense(suggestion, item))) fresh.push(suggestion);
+  }
+  return { fresh, alreadySaved };
+}
+
+/** Recurring payments detected in a statement that the user has not saved yet. */
+export function recurringExpensesFromStatement(document: BankStatementDocument, saved: readonly RecurringExpense[] = []): RecurringExpense[] {
+  return splitRecurringSuggestions(detectedRecurringExpenses(document), saved).fresh;
 }

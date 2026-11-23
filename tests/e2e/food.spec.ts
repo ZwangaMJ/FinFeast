@@ -14,7 +14,7 @@ const button = (page: Page, name: string) => page.getByRole('button', { name, ex
 const sheetClosed = (page: Page) => expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
 
 async function openMeals(page: Page) {
-  await page.goto('/meals');
+  await page.goto('meals');
   const build = button(page, 'Build my week');
   if (await build.isVisible({ timeout: 15_000 }).catch(() => false)) await build.click();
   await expect(visible(page, 'food-image').first()).toBeVisible({ timeout: 30_000 });
@@ -28,7 +28,7 @@ test('signed out: the web export boots to sign-in without calling a photo API', 
     photoCalls.push(route.request().url());
     return route.abort();
   });
-  await page.goto('/');
+  await page.goto('./');
   await expect(page.getByPlaceholder('you@example.com').filter({ visible: true }).first()).toBeVisible({ timeout: 30_000 });
   expect(photoCalls).toEqual([]);
   expect(errors).toEqual([]);
@@ -43,7 +43,7 @@ test('meal tiles fall back to emoji when no photo is available', async ({ page }
 
 test('meal CRUD: create, edit and delete a custom meal', async ({ page }) => {
   const saved = await mockSupabase(page);
-  await page.goto('/recipes');
+  await page.goto('recipes');
   await button(page, 'New meal').click();
 
   await byLabel(page, 'Name').fill('E2E lentil curry');
@@ -71,7 +71,7 @@ test('meal CRUD: create, edit and delete a custom meal', async ({ page }) => {
 
 test('editing a starter meal saves a personal copy; removing hides it', async ({ page }) => {
   const saved = await mockSupabase(page);
-  await page.goto('/recipes');
+  await page.goto('recipes');
   await page.getByText('Banana peanut-butter oats').filter({ visible: true }).first().click();
   await byLabel(page, 'Name').fill('My banana oats');
   await button(page, 'Save changes').click();

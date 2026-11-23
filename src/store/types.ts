@@ -35,15 +35,26 @@ export type Income = {
   source: 'document' | 'manual';
 };
 
-export type Bill = {
+export type RecurringCategory = 'housing' | 'transport' | 'utilities' | 'subscriptions' | 'insurance' | 'debt' | 'other';
+export type RecurringFrequency = 'monthly' | 'weekly' | 'biweekly';
+export type RecurringSource = 'manual' | 'bank_statement' | 'payslip';
+
+/**
+ * A bill or other money that leaves on a schedule: rent, transport, utilities,
+ * insurance, subscriptions, debt. Subscriptions are recurring expenses with
+ * category 'subscriptions' (there is no separate subscription model).
+ */
+export type RecurringExpense = {
   id: string;
   name: string;
-  amount: number;
-  day: number;
-  cadence: 'monthly' | 'weekly';
-  confidence: Confidence;
-  active: boolean;
-  isSubscription: boolean;
+  amount: number; // per debit, not per month
+  category: RecurringCategory;
+  billingDayOfMonth: number; // 1–31; for weekly/biweekly, the first debit day in a month
+  frequency: RecurringFrequency;
+  isEssential: boolean; // fixed essential vs variable / optional
+  source: RecurringSource;
+  active: boolean; // false once the user marks it cancelled
+  confidence?: Confidence; // set for detected expenses
   usageNote?: string; // e.g. "opened 1× in 7 months"
   monthsPaid?: number;
 };
@@ -239,7 +250,7 @@ export type AppData = {
   manualMode: boolean;
   income: Income | null;
   weeklyFoodBudget: number;
-  bills: Bill[];
+  recurringExpenses: RecurringExpense[];
   transactions: Transaction[];
   documents: DocRecord[];
   plan: MealPlan | null;

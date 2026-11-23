@@ -2,61 +2,83 @@ import { useState } from 'react';
 import { View } from 'react-native';
 
 import { Button, Card, Field, Screen, Txt } from '@/components/ui';
+import { useAuthAction } from '@/hooks/useAuthAction';
+import { checkCode, checkEmail, checkNewPassword, unwrap, ValidationError } from '@/lib/auth/validation';
 import { useAuthStore } from '@/store/useAuthStore';
 import { useTheme } from '@/theme';
 
-type Mode = 'signIn' | 'signUp';
+type Step = 'signIn' | 'signUp' | 'confirm' | 'forgot' | 'reset';
+
+const HEADINGS: Record<Step, { title: string; body: string }> = {
+  signIn: { title: 'Welcome back', body: 'Sign in to your FinFeast account.' },
+  signUp: { title: 'Create your account', body: 'Your budget, meal plans and goals are saved to your account.' },
+  confirm: { title: 'Check your email', body: 'Enter the code we sent to confirm your email address.' },
+  forgot: { title: 'Reset your password', body: 'We’ll email you a code to set a new password.' },
+  reset: { title: 'Set a new password', body: 'Enter the code from your email and choose a new password.' },
+};
 
 export default function SignIn() {
   const { c, tone } = useTheme();
-  const signIn = useAuthStore((state) => state.signIn);
-  const signUp = useAuthStore((state) => state.signUp);
-  const [mode, setMode] = useState<Mode>('signIn');
+  // Actions only: reading them via getState() keeps this screen from re-rendering on auth changes.
+  const auth = useAuthStore.getState();
+  const [step, setStep] = useState<Step>('signIn');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  // Autofill and some keyboards add invisible spaces; Supabase compares passwords exactly
-  const edgeSpace = password.length > 0 && password !== password.trim();
+  const [code, setCode] = useState('');
+  const { busy, error, notice, setNotice, run, clearMessages } = useAuthAction();
 
-  const submit = async () => {
-    const normalizedEmail = email.trim().toLowerCase();
-    setError(null);
-    setNotice(null);
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      setError('Enter a valid email address.');
-      return;
-    }
-    if (!password) {
-      setError('Enter your password.');
-      return;
-    }
-    if (mode === 'signUp' && password.length < 8) {
-      setError('Use a password with at least 8 characters.');
-      return;
-    }
-
-    setBusy(true);
-    try {
-      if (mode === 'signIn') {
-        await signIn(normalizedEmail, password);
-      } else {
-        const signedIn = await signUp(normalizedEmail, password);
-        if (!signedIn) {
-          setNotice('Account created. Check your email to confirm your address, then sign in.');
-          setMode('signIn');
-          setPassword('');
-        }
-      }
-    } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : 'Something went wrong. Please try again.';
-      setError(message.toLowerCase().includes('invalid login credentials') ? 'Email or password is incorrect.' : message);
-    } finally {
-      setBusy(false);
-    }
+  const goTo = (next: Step, message: string | null = null) => {
+    setStep(next);
+    clearMessages();
+    setNotice(message);
+    setCode('');
+    if (next !== 'confirm') setPassword('');
   };
+
+  const validEmail = () => unwrap(checkEmail(email));
+  const validNewPassword = () => unwrap(checkNewPassword(password));
+  const validCode = () => unwrap(checkCode(code));
+
+  const submit = () =>
+    run(async () => {
+      if (step === 'signIn') {
+        const address = validEmail();
+        if (!password) throw new ValidationError('Enter your password.');
+        const result = await auth.signIn(address, password);
+        if (result === 'needsConfirmation') goTo('confirm', 'Your email isn’t confirmed yet. We sent you a new code.');
+      } else if (step === 'signUp') {
+        const address = validEmail();
+        const result = await auth.signUp(address, validNewPassword());
+        if (result === 'needsConfirmation') goTo('confirm', `We sent a code to ${address}.`);
+      } else if (step === 'confirm') {
+        await auth.confirmSignUp(validEmail(), validCode());
+      } else if (step === 'forgot') {
+        const address = validEmail();
+        await auth.requestPasswordReset(address);
+        goTo('reset', `If ${address} has an account, we sent it a code.`);
+      } else {
+        await auth.resetPassword(validEmail(), validCode(), validNewPassword());
+      }
+    });
+
+  const resend = () =>
+    run(async () => {
+      const address = validEmail();
+      if (step === 'confirm') await auth.resendConfirmation(address);
+      else await auth.requestPasswordReset(address);
+      setNotice(`We sent a new code to ${address}.`);
+    });
+
+  const submitLabel: Record<Step, string> = {
+    signIn: 'Sign in',
+    signUp: 'Create account',
+    confirm: 'Confirm email',
+    forgot: 'Email me a code',
+    reset: 'Set new password',
+  };
+  const needsCode = step === 'confirm' || step === 'reset';
+  const needsPassword = step === 'signIn' || step === 'signUp' || step === 'reset';
+  const choosingPassword = step === 'signUp' || step === 'reset';
 
   return (
     <Screen edges={['top', 'bottom']} contentStyle={{ flexGrow: 1, justifyContent: 'center' }}>
@@ -65,8 +87,8 @@ export default function SignIn() {
           <Txt v="hero" style={{ fontSize: 40, lineHeight: 46 }}>
             FinFeast
           </Txt>
-          <Txt v="title">{mode === 'signIn' ? 'Welcome back' : 'Create your account'}</Txt>
-          <Txt muted>Sign in with email and password to access your private financial workspace.</Txt>
+          <Txt v="title">{HEADINGS[step].title}</Txt>
+          <Txt muted>{HEADINGS[step].body}</Txt>
         </View>
 
         <Card style={{ gap: 16 }}>
@@ -78,43 +100,57 @@ export default function SignIn() {
             keyboardType="email-address"
             autoComplete="email"
             textContentType="emailAddress"
-            autoFocus
+            autoFocus={step === 'signIn' || step === 'signUp' || step === 'forgot'}
           />
-          <Field
-            label="Password"
-            placeholder={mode === 'signUp' ? 'At least 8 characters' : 'Your password'}
-            value={password}
-            onChange={setPassword}
-            secure
-            autoComplete={mode === 'signUp' ? 'new-password' : 'current-password'}
-            textContentType={mode === 'signUp' ? 'newPassword' : 'password'}
-          />
-          {edgeSpace ? (
-            <Txt v="small" color={tone('amber').fg}>
-              Your password starts or ends with a space. If that isn’t part of it, remove it.
-            </Txt>
+          {needsCode ? (
+            <Field
+              label="Code from your email"
+              placeholder="123456"
+              value={code}
+              onChange={setCode}
+              keyboardType="number-pad"
+              autoComplete="one-time-code"
+              textContentType="oneTimeCode"
+              autoFocus
+            />
           ) : null}
-          {error ? <Txt v="small" color={c.destructive}>{error}</Txt> : null}
+          {needsPassword ? (
+            <Field
+              label={step === 'reset' ? 'New password' : 'Password'}
+              placeholder={choosingPassword ? 'At least 8 characters' : 'Your password'}
+              value={password}
+              onChange={setPassword}
+              secure
+              autoComplete={choosingPassword ? 'new-password' : 'current-password'}
+              textContentType={choosingPassword ? 'newPassword' : 'password'}
+              onSubmit={() => void submit()}
+            />
+          ) : null}
+
+          {error ? (
+            <View accessibilityRole="alert" accessibilityLiveRegion="polite">
+              <Txt v="small" color={c.destructive}>
+                {error}
+              </Txt>
+            </View>
+          ) : null}
           {notice ? <Txt v="small" color={tone('green').fg}>{notice}</Txt> : null}
-          <Button
-            label={busy ? 'Please wait…' : mode === 'signIn' ? 'Sign in' : 'Create account'}
-            onPress={() => void submit()}
-            disabled={busy}
-          />
-          <Button
-            label={mode === 'signIn' ? 'New to FinFeast? Create an account' : 'Already have an account? Sign in'}
-            variant="ghost"
-            disabled={busy}
-            onPress={() => {
-              setMode((current) => (current === 'signIn' ? 'signUp' : 'signIn'));
-              setError(null);
-              setNotice(null);
-            }}
-          />
+
+          <Button label={busy ? 'Please wait…' : submitLabel[step]} onPress={() => void submit()} disabled={busy} />
+
+          {needsCode ? <Button label="Send a new code" variant="ghost" disabled={busy} onPress={() => void resend()} /> : null}
+          {step === 'signIn' ? (
+            <>
+              <Button label="Forgot your password?" variant="ghost" disabled={busy} onPress={() => goTo('forgot')} />
+              <Button label="New to FinFeast? Create an account" variant="ghost" disabled={busy} onPress={() => goTo('signUp')} />
+            </>
+          ) : (
+            <Button label="Back to sign in" variant="ghost" disabled={busy} onPress={() => goTo('signIn')} />
+          )}
         </Card>
 
         <Txt v="caption" muted center>
-          If you have existing FinFeast data on this device, it will be added to your first account only when that account has no saved cloud data.
+          Already used FinFeast on this device? That data moves into your account the first time you sign in, if the account is empty.
         </Txt>
       </View>
     </Screen>

@@ -1,10 +1,10 @@
 /** Payslip and bank statement PDFs are parsed locally. */
-import type { Bill, Category, Confidence, DocType, IncomeFrequency, ReceiptItem, Transaction } from '@/store/types';
+import type { Category, Confidence, DocType, IncomeFrequency, ReceiptItem, RecurringExpense, Transaction } from '@/store/types';
 import {
   BankStatementPdfError,
-  parseStatementItems,
-  parseStatementText,
-  recurringBillsFromStatement,
+  parseBankStatementItems,
+  parseBankStatementText,
+  detectedRecurringExpenses,
   toAppTransactions,
   type BankStatementDocument,
 } from './bankStatement';
@@ -28,7 +28,8 @@ export type ExtractionResult = {
   bankStatement: BankStatementDocument | null;
   payslip: PayslipDocument | null;
   payslipSummary: PayslipBudgetSummary | null;
-  recurringBills: Bill[];
+  /** Every recurring payment detected; the review step hides ones already saved. */
+  recurringExpenses: RecurringExpense[];
   variableCategories: Partial<Record<Category, { monthly: number; count: number }>>;
   savingsTransfers: { label: string; monthly: number; confidence: Confidence }[];
   transactions: Transaction[];
@@ -79,11 +80,9 @@ async function parsePayslipPdf(uri: string): Promise<{ document: PayslipDocument
 async function parseBankStatementPdf(uri: string): Promise<BankStatementDocument> {
   try {
     const extracted = await extractBankStatementPdf(uri);
-    // The pure parser needs a year for rows without one; this boundary reads the clock
-    const options = { pages: extracted.pages, fallbackYear: new Date().getFullYear() };
-    const result = extracted.items ? parseStatementItems(extracted.items, options) : parseStatementText(extracted.text, options);
-    if (!result.ok) throw new ParseError('illegible', result.error.message);
-    return result.value;
+    return extracted.items
+      ? parseBankStatementItems(extracted.items, extracted.pages)
+      : parseBankStatementText(extracted.text, extracted.pages);
   } catch (error) {
     if (error instanceof BankStatementPdfError) throw new ParseError(error.reason, error.message);
     throw error;
@@ -110,7 +109,7 @@ export async function parseDocument(input: UploadInput, type: DocType, docId: st
     bankStatement: null,
     payslip: null,
     payslipSummary: null,
-    recurringBills: [],
+    recurringExpenses: [],
     variableCategories: {},
     savingsTransfers: [],
     transactions: [],
@@ -188,7 +187,7 @@ export async function parseDocument(input: UploadInput, type: DocType, docId: st
         deductions: [],
       },
       bankStatement,
-      recurringBills: recurringBillsFromStatement(bankStatement),
+      recurringExpenses: detectedRecurringExpenses(bankStatement),
       variableCategories: {
         food_grocery: categoryMonthly(['food_grocery']),
         food_dining: categoryMonthly(['food_dining']),

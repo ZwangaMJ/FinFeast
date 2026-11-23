@@ -22,15 +22,15 @@ export default function Goals() {
   const { tone } = useTheme();
   const currency = useCurrency();
   const goals = useStore((s) => s.goals);
-  const bills = useStore((s) => s.bills);
+  const recurringExpenses = useStore((s) => s.recurringExpenses);
   const food = useStore((s) => s.weeklyFoodBudget);
   const found = useStore((s) => s.foundMoney);
   const contribute = useStore((s) => s.contribute);
   const [moving, setMoving] = useState(false);
   const [amount, setAmount] = useState('');
   const [goalId, setGoalId] = useState<string | null>(null);
-  const meter = securityMeter(goals, bills, food);
-  const hasFinancialData = useStore((s) => Boolean(s.income || s.bills.length || s.transactions.length || s.weeklyFoodBudget > 0));
+  const meter = securityMeter(goals, recurringExpenses, food);
+  const hasFinancialData = useStore((s) => Boolean(s.income || s.recurringExpenses.length || s.transactions.length || s.weeklyFoodBudget > 0));
   const pending = found.filter((f) => f.status === 'pending');
   const history = found.filter((f) => f.status !== 'pending').slice(0, 8);
   const totalFound = found.filter((f) => f.status === 'allocated').reduce((a, f) => a + f.amount, 0);
