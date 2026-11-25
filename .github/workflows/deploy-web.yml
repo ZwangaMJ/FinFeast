@@ -19,17 +19,15 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  deploy:
-    name: deploy
+  # Upload and publish run as separate jobs (GitHub's standard Pages setup).
+  # In a single job, deploy-pages sometimes queried for the github-pages
+  # artifact before GitHub listed it and failed with "No artifacts named
+  # github-pages were found", even though the upload had succeeded.
+  pages-artifact:
+    name: pages-artifact
     needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Download tested web build
         uses: actions/download-artifact@v8
@@ -40,6 +38,19 @@ jobs:
       - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
+
+  deploy:
+    name: deploy
+    needs: pages-artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
