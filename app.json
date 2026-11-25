@@ -48,7 +48,15 @@
           "photosPermission": false
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraProguardRules": "# pdfbox-android (used by expo-pdf-text-extract for PDF text): JPEG 2000 decoding is an optional\n# dependency that is not bundled, so R8 must not fail on the missing class.\n-dontwarn com.gemalto.jp2.**\n# pdfbox loads fonts, filters and resources by name; keep it intact so PDF upload works in release builds.\n-keep class com.tom_roush.** { *; }"
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false,
