@@ -32,6 +32,7 @@ The web build is published to GitHub Pages at **https://zwangamj.github.io/FinFe
 |---|---|---|
 | `.github/workflows/ci.yml` | Pull requests to `main` (and when called by deploy) | `checks`: lint, typecheck, parser tests. `e2e`: export the web build, run Playwright smoke tests, upload the report and the tested `dist/` as `web-dist`. |
 | `.github/workflows/deploy-web.yml` | Push to `main`, or the Run workflow button | Runs `ci.yml`, then deploys the `web-dist` artifact (exactly what was tested) to GitHub Pages. |
+| `.github/workflows/android-release.yml` | A version tag like `v1.2.3`, or the Run workflow button | Runs `ci.yml`, builds a signed release APK on the runner, and publishes it as a GitHub Release (tags) or a workflow artifact (manual runs). |
 
 No secrets are needed: Pages deploys with the workflow's built-in token. The web build does need two **repository variables**, `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` (the publishable key). Both are public by design, since they ship in the app. CI fails early with a clear message if either is missing.
 
@@ -40,6 +41,33 @@ One-time GitHub setup:
 1. **Settings → General → Danger Zone → Change visibility → Public** (free GitHub Pages needs a public repo).
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions.** Do this before the first merge, or the deploy job fails.
 3. After `ci.yml` has run once on a PR: **Settings → Rules → Rulesets → New branch ruleset** targeting `main`, enable **Require status checks to pass**, and add `checks` and `e2e`.
+
+### Android APK
+
+Android builds are made on the GitHub runner, not EAS: `expo prebuild` generates `android/`, then Gradle builds `assembleRelease` for arm64-v8a and armeabi-v7a. The APK uses the same Supabase project as the web build.
+
+To release, push a tag. The tag sets the version name, and the version code is `MAJOR*10000 + MINOR*100 + PATCH` (`scripts/set-android-version.mjs`), so every release installs as an update over the last:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+The release page has `FinFeast-v1.0.0.apk` and its SHA-256. To install it, open the APK on the phone and allow installing unknown apps when Android asks.
+
+One-time signing setup. Run these in your own terminal and keep the passwords out of chat and git:
+
+1. Create the release keystore (`*.jks` is gitignored):
+   ```bash
+   keytool -genkeypair -v -storetype PKCS12 -keystore finfeast-release.jks -alias finfeast -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. Add four repository secrets:
+   ```bash
+   base64 -w0 finfeast-release.jks | gh secret set ANDROID_KEYSTORE_BASE64
+   gh secret set ANDROID_KEYSTORE_PASSWORD
+   gh secret set ANDROID_KEY_ALIAS --body finfeast
+   gh secret set ANDROID_KEY_PASSWORD
+   ```
+3. **Back up `finfeast-release.jks` and its passwords** in a password manager. Android only installs updates signed with the same key. If the key is lost, people have to uninstall FinFeast and lose its local data before they can install a new version.
 
 ## Accounts and data
 
